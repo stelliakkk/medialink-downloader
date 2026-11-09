@@ -23,6 +23,7 @@ WEB_COOKIES = frozenset(("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd
 VIDEO_HOSTS = frozenset(("www.bilibili.com", "bilibili.com", "m.bilibili.com"))
 LINK_HOSTS = VIDEO_HOSTS | {"b23.tv"}
 VIDEO_PATH = re.compile(r"/video/(BV[A-Za-z0-9]{10}|av[1-9][0-9]*)/?")
+SHARE_LINK = re.compile(r"(?:https?://)?(?:[\w.-]+\.)?(?:bilibili\.com|b23\.tv)/[^\s<>\"【】]+", re.I)
 WBI_ORDER = (
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
     33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61,
@@ -95,12 +96,15 @@ def request_session(cookies: dict[str, str] | None = None) -> requests.Session:
     return session
 
 
+def share_links(text: str):
+    for match in SHARE_LINK.finditer(text):
+        yield match[0].rstrip("。，、；！？）)]")
+
+
 def normalize_link(text: str, session: requests.Session) -> tuple[str, int]:
-    # Copy-share text can contain a title and trailing punctuation.
-    match = re.search(r"(?:https?://)?(?:[\w.-]+\.)?(?:bilibili\.com|b23\.tv)/[^\s<>\"【】]+", text, re.I)
-    if not match:
+    link = next(share_links(text), None)
+    if link is None:
         raise UserError("请粘贴 B 站普通视频链接或 b23.tv 分享链接。")
-    link = match[0].rstrip("。，、；！？）)]")
     if not re.match(r"https?://", link, re.I):
         link = "https://" + link
     if link.lower().startswith("http://"):

@@ -1,18 +1,22 @@
 from pathlib import Path
+import sqlite3
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLineEdit,
-    QMainWindow, QMenu, QProgressBar, QScrollArea, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QProgressBar, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
-from ..download import save_media
-from ..models import Output, check_cancelled
+from ..models import Output, UserError, check_cancelled
 from ..platform import Bilibili
+from ..queue import DownloadQueue
+from ..tasks import Request, State, TaskStore
 from ..workers import Worker
+from .batch_dialogs import LinkDialog, PartsDialog
 from .login_dialog import LoginDialog
+from .task_pages import HistoryPage, QueuePage, STATE_LABELS
 from .widgets import ComboBox, FitLabel, Poster, app_icon, button, label, set_role
 
 
@@ -55,20 +59,37 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.closing = False
         self.files = ()
+        self._last_active_id = None
+        self.store = TaskStore(storage.directory / "downloads.sqlite3")
+        self.queue = DownloadQueue(self.store, lambda: self.cookies.copy(), self)
+        self._store_closed = False
         self.setWindowTitle("Bili 下载器")
         self.setWindowIcon(app_icon())
-        self.resize(1140, 792)
+        self.resize(1140, 824)
         self.setMinimumSize(920, 630)
         self._build()
+        self.queue.updated.connect(self._update_tasks)
+        self.queue.progress.connect(self._queue_progress)
+        self.queue.error.connect(self._queue_error)
+        self.queue.idle.connect(self._maybe_close)
+        self._update_tasks()
         self._update_controls()
         if self.cookies:
             self._check_account()
 
     def _build(self):
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.setCentralWidget(self.tabs)
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
         scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setCentralWidget(scroller)
+        self.tabs.addTab(scroller, "下载")
+        self.queue_page = QueuePage(self.queue)
+        self.history_page = HistoryPage(self.store, self._enqueue)
+        self.tabs.addTab(self.queue_page, "队列")
+        self.tabs.addTab(self.history_page, "历史")
+        self.tabs.currentChanged.connect(self._task_tab_changed)
         canvas = QWidget()
         canvas.setObjectName("canvas")
         scroller.setWidget(canvas)
@@ -94,7 +115,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(intro)
 
         entry, entry_layout = panel("inputPanel", 16, 10)
-        entry_layout.addLayout(row(label("01", "step"), label("视频链接", "section"), None))
+        self.batch_button = button("批量添加链接", "ghost")
+        self.batch_button.clicked.connect(self._batch)
+        entry_layout.addLayout(row(label("01", "step"), label("视频链接", "section"), None, self.batch_button))
         self.url = QLineEdit()
         self.url.setObjectName("link")
         self.url.setPlaceholderText("https://www.bilibili.com/video/BV…  或  https://b23.tv/…")
@@ -137,7 +160,9 @@ class MainWindow(QMainWindow):
         self.parts.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.parts.addItem("解析后可选分 P")
         self.parts.currentIndexChanged.connect(self._part_changed)
-        part_row = row(label("分 P", "field"), self.parts, gap=12)
+        self.multi_parts = button("多选分 P", "ghost")
+        self.multi_parts.clicked.connect(self._choose_parts)
+        part_row = row(label("分 P", "field"), self.parts, self.multi_parts, gap=8)
         part_row.setStretch(1, 1)
         layout.addLayout(part_row)
         return frame
@@ -221,10 +246,12 @@ class MainWindow(QMainWindow):
         audio_only = self.output_choices.checkedId() == 1
         self.url.setEnabled(idle)
         self.paste.setEnabled(idle)
+        self.batch_button.setEnabled(idle)
         self.resolve_button.setEnabled(idle and bool(self.url.text().strip()))
         self.account_button.setEnabled(idle)
         self.parts.setEnabled(idle and self.video is not None and len(self.video.parts) > 1
                               and self.url.text().strip() == self.parsed_link)
+        self.multi_parts.setEnabled(self.parts.isEnabled() and parsed)
         self.folder_button.setEnabled(idle)
         for option in self.output_choices.buttons():
             option.setEnabled(idle)
@@ -283,10 +310,13 @@ class MainWindow(QMainWindow):
             self.worker.cancel.set()
             self.cancel_button.setEnabled(False)
             self._progress("正在取消", None, "等待当前网络或文件操作结束")
+        else:
+            self.queue.cancel()
+            self.cancel_button.setEnabled(False)
 
     def _start(self, operation, receive):
         self.worker = Worker(operation, self)
-        self.worker.ready.connect(receive)
+        self.worker.ready.connect(receive, Qt.ConnectionType.QueuedConnection)
         self.worker.failed.connect(self._error)
         self.worker.cancelled.connect(lambda: self._progress("已取消", 0, "可以重新开始当前操作"))
         self.worker.progress.connect(self._worker_progress)
@@ -303,10 +333,9 @@ class MainWindow(QMainWindow):
     def _end(self):
         previous, self.worker = self.worker, None
         previous.deleteLater()
-        self.cancel_button.hide()
+        self._queue_cancel_button()
         self._update_controls()
-        if self.closing:
-            self.close()
+        self._maybe_close()
 
     def _resolve(self):
         text = self.url.text().strip()
@@ -409,23 +438,129 @@ class MainWindow(QMainWindow):
     def _download(self):
         if not self.download_button.isEnabled():
             return
+        self._enqueue([self._request(self.part)])
+
+    def _request(self, part):
         selected = self.quality.currentData()
-        quality = self.formats.select(None).code if selected == "best" else selected
         output = list(Output)[self.output_choices.checkedId()]
-        cookies, video, part, folder = self.cookies.copy(), self.video, self.part, self.folder
-        self.files = ()
-        self.open_button.hide()
-        self._progress("正在准备下载", None, "正在确认目标画质与保存位置")
+        return Request.for_part(self.video, part, None if selected == "best" else selected, output, self.folder)
+
+    def _choose_parts(self):
+        if not self.multi_parts.isEnabled():
+            return
+        request = self._request(self.part)
+        quality = self.formats.select(request.quality).label if request.quality is not None else "每个分 P 最高可用"
+        dialog = PartsDialog(self, self.video, self.part, quality, request.output)
+        if dialog.exec():
+            self._enqueue([self._request(part) for part in dialog.chosen])
+
+    def _batch(self):
+        if self.worker:
+            return
+        output, folder = list(Output)[self.output_choices.checkedId()], self.folder
+        dialog = LinkDialog(self, output, folder)
+        if not dialog.exec():
+            return
+        cookies = self.cookies.copy()
+        links = dialog.links
+        self._progress("批量解析", None, f"正在检查 {len(links)} 条链接")
 
         def operation(task):
-            return save_media(cookies, video, part, quality, output, folder, task.cancel, task.progress.emit)
+            requests, errors = [], []
+            with Bilibili(cookies) as api:
+                for index, link in enumerate(links, 1):
+                    check_cancelled(task.cancel)
+                    task.progress.emit("批量解析", None, f"正在处理第 {index} / {len(links)} 条")
+                    try:
+                        video, part = api.resolve(link)
+                    except UserError as error:
+                        errors.append(f"第 {index} 条 · {error}")
+                    else:
+                        requests.append(Request.for_part(video, part, None, output, folder))
+            check_cancelled(task.cancel)
+            return requests, errors
 
-        def receive(files):
-            self.files = files
-            self.open_button.show()
-            self._progress("下载完成", 100, f"{len(files)} 个文件已保存到 {folder}")
+        def receive(payload):
+            if not self.worker.cancel.is_set():
+                requests, errors = payload
+                self._enqueue(requests, errors)
 
         self._start(operation, receive)
+
+    def _enqueue(self, requests, errors=None):
+        if self.closing:
+            return
+        result = self.queue.enqueue(requests)
+        if result is None:
+            return
+        parts = [f"加入 {result.added} 项"]
+        if result.duplicates:
+            parts.append(f"跳过 {result.duplicates} 个重复项")
+        if errors:
+            parts.append(f"{len(errors)} 条解析失败（悬停看详情）")
+        if self.queue.paused and result.added:
+            parts.append("队列已暂停")
+        message = " · ".join(parts)
+        if result.added or not errors:
+            self._progress("队列已更新", 0, message)
+        else:
+            self._error(message)
+        if errors is not None:
+            self.queue_page.report_batch(message, errors)
+            if errors:
+                self.detail.setToolTip(message + "\n" + "\n".join(errors))
+        if result.added and self.tabs.currentWidget() is self.history_page:
+            self.tabs.setCurrentWidget(self.queue_page)
+
+    def _queue_cancel_button(self):
+        worker = self.queue.worker
+        self.cancel_button.setVisible(worker is not None)
+        self.cancel_button.setEnabled(worker is not None and not worker.cancel.is_set())
+
+    def _queue_progress(self, stage, value, detail):
+        self.queue_page.progress(stage, value, detail)
+        if stage == "正在准备":
+            self.files = ()
+            self.open_button.hide()
+        if not self.worker:
+            self._progress(stage, value, detail)
+            self._queue_cancel_button()
+
+    def _queue_error(self, message):
+        self.queue_page.detail.set_full(message)
+        if not self.worker:
+            self._error(message)
+
+    def _task_tab_changed(self, index):
+        if index != 0:
+            self._update_tasks()
+
+    def _update_tasks(self):
+        try:
+            active = self.store.active()
+            current = self.queue.active_id
+            previous, self._last_active_id = self._last_active_id, current
+            done = self.store.get(previous) if previous is not None and current is None else None
+        except sqlite3.Error:
+            self._queue_error("读取任务记录失败，请检查本机数据目录。")
+            return
+        visible = self.tabs.currentWidget()
+        if visible is self.queue_page:
+            self.queue_page.render(active)
+        elif visible is self.history_page:
+            self.history_page.refresh()
+        self.tabs.setTabText(1, f"队列 ({len(active)})" if active else "队列")
+        if not self.worker:
+            self._queue_cancel_button()
+        if done and done.state is State.DONE:
+            self.files = done.media.files
+            self.open_button.show()
+            if not self.worker:
+                self._progress("下载完成", 100, f"{len(self.files)} 个文件已保存到 {done.request.folder}")
+        elif done and not self.worker:
+            self._progress(STATE_LABELS[done.state], 0, done.message)
+            if done.state is State.FAILED:
+                set_role(self.phase, "error")
 
     def _show_files(self):
         if self.files:
@@ -502,9 +637,18 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
 
     def closeEvent(self, event):
+        self.closing = True
+        self.queue.shutdown()
         if self.worker:
-            self.closing = True
             self._cancel()
+        if self.worker or self.queue.worker:
             event.ignore()
             return
+        if not self._store_closed:
+            self.store.close()
+            self._store_closed = True
         super().closeEvent(event)
+
+    def _maybe_close(self):
+        if self.closing and not self.worker and not self.queue.worker:
+            self.close()

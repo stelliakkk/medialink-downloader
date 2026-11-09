@@ -15,6 +15,7 @@ from urllib3.exceptions import HTTPError
 from .models import Formats, Output, Part, Track, UserError, Video, check_cancelled
 from .platform import Bilibili, UA
 from .storage import ROOT
+from .tasks import SavedMedia
 
 Progress = Callable[[str, int | None, str], None]
 
@@ -144,7 +145,7 @@ def _publish(folder: Path, pending: list[tuple[Path, str]], cancel: Event) -> tu
 def save_media(
     cookies: dict[str, str], video: Video, part: Part, quality_code: int | None,
     output: Output, folder: Path, cancel: Event, progress: Progress,
-) -> tuple[Path, ...]:
+) -> SavedMedia:
     ffmpeg, ffprobe = (str(ROOT / "runtime" / exe) for exe in ("ffmpeg.exe", "ffprobe.exe"))
     if not all(Path(tool).is_file() for tool in (ffmpeg, ffprobe)):
         raise UserError("缺少随包的 FFmpeg 工具。请完整解压便携包后再启动。")
@@ -191,4 +192,4 @@ def save_media(
         progress("保存文件", 98, "正在写入最终文件名")
         files = _publish(folder, pending, cancel)
         progress("下载完成", 100, " · ".join(file.suffix[1:].upper() for file in files))
-        return files
+        return SavedMedia(files, quality.code if quality else None, quality.label if quality else "")

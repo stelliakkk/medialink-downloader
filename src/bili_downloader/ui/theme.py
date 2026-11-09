@@ -34,12 +34,13 @@ QLabel[role="badge"] {
     padding: 0 8px; font-size: 11px;
 }
 QLabel#qrTile { background: #ffffff; color: #58483d; border: 1px solid #e3ddd5; border-radius: 14px; }
-QLineEdit, QComboBox {
+QLineEdit, QComboBox, QPlainTextEdit {
     min-height: 36px; color: #25211e; background: #ffffff; border: 1px solid #d9d0c6;
     padding: 0 11px; border-radius: 8px; selection-background-color: #a93820;
 }
 QLineEdit#link { min-height: 43px; padding: 0 13px; font-size: 14px; }
-QLineEdit:focus, QComboBox:focus { border: 1px solid #a93820; }
+QPlainTextEdit { padding: 9px 11px; }
+QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus { border: 1px solid #a93820; }
 QComboBox::drop-down { width: 30px; border: 0px; }
 QComboBox::down-arrow { image: none; }
 QComboBox { padding-right: 30px; }
@@ -80,6 +81,20 @@ QMenu::item { padding: 8px 19px; }
 QMenu::item:selected { background: #fae9e0; }
 QToolTip { background: #fffdfa; color: #25211e; border: 1px solid #d9d0c6; padding: 5px; }
 QScrollArea { border: 0; }
+QTabWidget::pane { border: 0; border-top: 1px solid #e3ddd5; background: #f4f2ee; }
+QTabBar::tab {
+    background: #f4f2ee; color: #655d55; padding: 8px 15px;
+    margin-right: 2px; min-width: 56px; border-bottom: 2px solid transparent;
+}
+QTabBar::tab:hover { background: #f7ede5; }
+QTabBar::tab:selected { color: #85341f; border-bottom-color: #bd3e21; font-weight: 700; }
+QTableWidget, QListWidget {
+    background: #fffdfa; alternate-background-color: #f8f5f0;
+    border: 1px solid #e3ddd5; border-radius: 9px;
+    selection-background-color: #f6e1d8; selection-color: #532a1f;
+}
+QTableWidget::item, QListWidget::item { padding: 5px 8px; }
+QHeaderView::section { background: #f1ece5; color: #4d453e; border: 0; padding: 8px 10px; }
 """
 
 
