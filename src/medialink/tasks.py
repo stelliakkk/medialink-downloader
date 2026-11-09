@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-from .models import Output, Part, Video
+from .models import Output, Part, Source, Video
 
 
 class State(Enum):
@@ -25,7 +25,7 @@ TERMINAL = (State.DONE, State.FAILED, State.CANCELLED, State.INTERRUPTED)
 
 @dataclass(frozen=True, slots=True)
 class Request:
-    bvid: str
+    video_id: str
     page: int
     title: str
     part: str
@@ -33,15 +33,17 @@ class Request:
     output: Output
     folder: Path
     cid: int | None = None
+    source: Source = Source.BILIBILI
 
     @classmethod
     def for_part(cls, video: Video, part: Part, quality: int | None, output: Output, folder: Path):
-        return cls(video.bvid, part.number, video.title, part.name,
-                   None if output is Output.AUDIO else quality, output, folder.absolute(), part.cid)
+        return cls(video.video_id, part.number, video.title, part.name,
+                   None if output is Output.AUDIO else quality, output, folder.absolute(),
+                   part.cid if video.source is Source.BILIBILI else None, video.source)
 
     @property
     def url(self) -> str:
-        return f"https://www.bilibili.com/video/{self.bvid}/?p={self.page}"
+        return self.source.url(self.video_id, self.page)
 
     @property
     def folder_key(self) -> str:
@@ -49,6 +51,8 @@ class Request:
 
     @property
     def display(self) -> str:
+        if self.source is Source.DOUYIN:
+            return self.title
         suffix = f" · {self.part}" if self.part and self.part != self.title else ""
         return f"{self.title}  ·  P{self.page:02d}{suffix}"
 
@@ -98,7 +102,8 @@ class TaskStore:
             self.db.executescript("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY,
-                    bvid TEXT NOT NULL,
+                    video_id TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'bilibili',
                     page INTEGER NOT NULL,
                     cid INTEGER,
                     title TEXT NOT NULL,
@@ -114,21 +119,30 @@ class TaskStore:
                     files TEXT NOT NULL DEFAULT '[]',
                     message TEXT NOT NULL DEFAULT ''
                 );
-                CREATE INDEX IF NOT EXISTS task_identity ON tasks(bvid,page,output,folder_key);
                 CREATE INDEX IF NOT EXISTS task_state ON tasks(state,id);
                 CREATE INDEX IF NOT EXISTS task_history_order ON tasks(finished DESC,id DESC)
                     WHERE state NOT IN ('waiting','running');
             """)
-            if not any(column["name"] == "cid" for column in self.db.execute("PRAGMA table_info(tasks)")):
+            self.db.execute("BEGIN IMMEDIATE")
+            columns = {column["name"] for column in self.db.execute("PRAGMA table_info(tasks)")}
+            if "cid" not in columns:
                 self.db.execute("ALTER TABLE tasks ADD COLUMN cid INTEGER")
+            if "bvid" in columns and "video_id" not in columns:
+                self.db.execute("ALTER TABLE tasks RENAME COLUMN bvid TO video_id")
+            if "source" not in columns:
+                self.db.execute("ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'bilibili'")
+            self.db.execute("DROP INDEX IF EXISTS task_identity")
+            self.db.execute("""
+                CREATE INDEX IF NOT EXISTS task_source_identity ON tasks(source,video_id,page,output,folder_key)
+            """)
 
     def close(self) -> None:
         self.db.close()
 
     @staticmethod
     def _task(row: sqlite3.Row) -> Task:
-        request = Request(row["bvid"], row["page"], row["title"], row["part"], row["quality"],
-                          Output(row["output"]), Path(row["folder"]), row["cid"])
+        request = Request(row["video_id"], row["page"], row["title"], row["part"], row["quality"],
+                          Output(row["output"]), Path(row["folder"]), row["cid"], Source(row["source"]))
         media = SavedMedia(tuple(Path(value) for value in json.loads(row["files"])),
                            row["actual_quality"], row["quality_label"])
         return Task(row["id"], request, State(row["state"]), row["finished"], media, row["message"])
@@ -166,9 +180,10 @@ class TaskStore:
                 if self._duplicate(request):
                     continue
                 self.db.execute("""
-                    INSERT INTO tasks(bvid,page,cid,title,part,quality,output,folder,folder_key,state)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
-                """, (request.bvid, request.page, request.cid, request.title, request.part, request.quality,
+                    INSERT INTO tasks(source,video_id,page,cid,title,part,quality,output,folder,folder_key,state)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """, (request.source.value, request.video_id, request.page, request.cid,
+                      request.title, request.part, request.quality,
                       request.output.value, str(request.folder), request.folder_key, State.WAITING.value))
                 added += 1
         return Enqueued(added, len(requests) - added)
@@ -176,10 +191,11 @@ class TaskStore:
     def _duplicate(self, request: Request) -> bool:
         rows = self.db.execute("""
             SELECT * FROM tasks
-            WHERE bvid=? AND page=? AND output=? AND folder_key=?
+            WHERE source=? AND video_id=? AND page=? AND output=? AND folder_key=?
               AND (cid IS NULL OR ? IS NULL OR cid=?)
               AND state IN ('waiting','running','done')
-        """, (request.bvid, request.page, request.output.value, request.folder_key, request.cid, request.cid))
+        """, (request.source.value, request.video_id, request.page, request.output.value,
+              request.folder_key, request.cid, request.cid))
         for row in rows:
             if row["state"] != State.DONE.value:
                 if row["quality"] == request.quality:

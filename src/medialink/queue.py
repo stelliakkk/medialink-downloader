@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from .download import save_media
 from .models import UserError, check_cancelled
-from .platform import Bilibili
+from .sources import open_source
 from .tasks import Enqueued, Request, SavedMedia, State, TaskStore
 from .workers import Worker
 
@@ -16,13 +16,13 @@ RECORD_ERROR = "文件操作已结束，但写入历史失败。请检查磁盘�
 
 def execute_request(request: Request, cookies: dict[str, str], task: Worker) -> SavedMedia:
     check_cancelled(task.cancel)
-    with Bilibili(cookies) as api:
+    with open_source(request.source, cookies, task.cancel) as api:
         video, part = api.resolve(request.url)
-    check_cancelled(task.cancel)
-    if request.cid is not None and part.cid != request.cid:
-        raise UserError("这条视频的分 P 已调整。请重新解析并添加任务。")
-    return save_media(cookies, video, part, request.quality, request.output,
-                      request.folder, task.cancel, task.progress.emit)
+        check_cancelled(task.cancel)
+        if request.cid is not None and part.cid != request.cid:
+            raise UserError("这条视频的分 P 已调整。请重新解析并添加任务。")
+        return save_media(api.formats, video, part, request.quality, request.output,
+                          request.folder, task.cancel, task.progress.emit)
 
 
 class DownloadQueue(QObject):

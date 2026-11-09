@@ -8,10 +8,12 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenu, QProgressBar, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from .. import __version__
-from ..models import Output, UserError, check_cancelled
-from ..platform import Bilibili
+from .. import APP_NAME, __version__
+from ..links import input_link
+from ..models import Output, Source, UserError, check_cancelled
+from ..platforms.bilibili import Bilibili
 from ..queue import DownloadQueue
+from ..sources import open_source
 from ..tasks import Request, State, TaskStore
 from ..workers import Worker
 from .batch_dialogs import LinkDialog, PartsDialog
@@ -63,7 +65,7 @@ class MainWindow(QMainWindow):
         self.store = TaskStore(storage.directory / "downloads.sqlite3")
         self.queue = DownloadQueue(self.store, lambda: self.cookies.copy(), self)
         self._store_closed = False
-        self.setWindowTitle("Bili 下载器")
+        self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
         self.resize(1140, 824)
         self.setMinimumSize(920, 630)
@@ -99,19 +101,19 @@ class MainWindow(QMainWindow):
 
         icon = label("")
         icon.setPixmap(self.windowIcon().pixmap(34, 34))
-        self.account_button = button("扫码登录")
+        self.account_button = button("B 站登录")
         self.account_button.clicked.connect(self._account_menu)
-        self.account_state = FitLabel("游客模式", "status")
+        self.account_state = FitLabel("B 站游客", "status")
         self.account_state.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.account_state.setFixedWidth(168)
-        top = row(icon, label("Bili 下载器", "brand"), label("桌面版", "badge"),
+        top = row(icon, label(APP_NAME, "brand"), label("桌面版", "badge"),
                   None, self.account_state, self.account_button, gap=10)
         layout.addLayout(top)
 
         intro = QVBoxLayout()
         intro.setSpacing(4)
         intro.addWidget(label("下载视频", "hero"))
-        intro.addWidget(label("粘贴哔哩哔哩分享链接，保存视频或音频。", "caption"))
+        intro.addWidget(label("粘贴 B 站或抖音分享链接，保存视频或音频。", "caption"))
         layout.addLayout(intro)
 
         entry, entry_layout = panel("inputPanel", 16, 10)
@@ -120,8 +122,8 @@ class MainWindow(QMainWindow):
         entry_layout.addLayout(row(label("01", "step"), label("视频链接", "section"), None, self.batch_button))
         self.url = QLineEdit()
         self.url.setObjectName("link")
-        self.url.setPlaceholderText("https://www.bilibili.com/video/BV…  或  https://b23.tv/…")
-        self.url.setAccessibleName("哔哩哔哩视频链接")
+        self.url.setPlaceholderText("粘贴 B 站 / 抖音视频链接或完整分享文本")
+        self.url.setAccessibleName("B 站或抖音视频链接")
         self.url.setClearButtonEnabled(True)
         self.url.textChanged.connect(self._link_changed)
         self.url.returnPressed.connect(self._resolve)
@@ -141,7 +143,7 @@ class MainWindow(QMainWindow):
         body.addWidget(self._options_panel(), 10)
         layout.addLayout(body, 1)
         layout.addWidget(self._transfer_panel())
-        layout.addLayout(row(label("普通投稿 · 本地处理", "caption"),
+        layout.addLayout(row(label("B 站 / 抖音 · 本地处理", "caption"),
                              None, label(f"版本 {__version__}", "caption")))
         self.url.setFocus()
 
@@ -163,8 +165,11 @@ class MainWindow(QMainWindow):
         self.multi_parts = button("多选分 P", "ghost")
         self.multi_parts.clicked.connect(self._choose_parts)
         part_row = row(label("分 P", "field"), self.parts, self.multi_parts, gap=8)
+        part_row.setContentsMargins(0, 0, 0, 0)
         part_row.setStretch(1, 1)
-        layout.addLayout(part_row)
+        self.part_controls = QWidget()
+        self.part_controls.setLayout(part_row)
+        layout.addWidget(self.part_controls)
         return frame
 
     def _options_panel(self):
@@ -346,11 +351,12 @@ class MainWindow(QMainWindow):
         cookies = self.cookies.copy()
 
         def operation(task):
-            with Bilibili(cookies) as api:
-                account_expired = bool(cookies) and api.account() is None
+            source, link = input_link(text)
+            with open_source(source, cookies, task.cancel) as api:
+                account_expired = isinstance(api, Bilibili) and bool(cookies) and api.account() is None
                 if account_expired:
                     api.session.cookies.clear()
-                video, part = api.resolve(text)
+                video, part = api.resolve(link)
                 check_cancelled(task.cancel)
                 formats = api.formats(video, part)
                 check_cancelled(task.cancel)
@@ -379,10 +385,12 @@ class MainWindow(QMainWindow):
 
     def _render_video(self):
         video, part = self.video, self.part
-        self.preview_badge.setText(video.bvid)
+        self.preview_badge.setText(f"{video.source.label} · {video.video_id}")
         self.poster.update_cover(self.cover, duration(part.seconds))
         self.video_title.set_full(video.title)
-        self.video_info.set_full(f"UP 主  {video.author}   ·   {len(video.parts)} 个分 P")
+        self.part_controls.setVisible(video.source is Source.BILIBILI)
+        details = f" · {len(video.parts)} 个分 P" if video.source is Source.BILIBILI else ""
+        self.video_info.set_full(f"{video.author}{details}")
         self.parts.blockSignals(True)
         self.parts.clear()
         for index, item in enumerate(video.parts):
@@ -467,16 +475,17 @@ class MainWindow(QMainWindow):
 
         def operation(task):
             requests, errors = [], []
-            with Bilibili(cookies) as api:
-                for index, link in enumerate(links, 1):
-                    check_cancelled(task.cancel)
-                    task.progress.emit("批量解析", None, f"正在处理第 {index} / {len(links)} 条")
-                    try:
+            for index, link in enumerate(links, 1):
+                check_cancelled(task.cancel)
+                task.progress.emit("批量解析", None, f"正在处理第 {index} / {len(links)} 条")
+                try:
+                    source, link = input_link(link)
+                    with open_source(source, cookies, task.cancel) as api:
                         video, part = api.resolve(link)
-                    except UserError as error:
-                        errors.append(f"第 {index} 条 · {error}")
-                    else:
-                        requests.append(Request.for_part(video, part, None, output, folder))
+                except UserError as error:
+                    errors.append(f"第 {index} 条 · {error}")
+                else:
+                    requests.append(Request.for_part(video, part, None, output, folder))
             check_cancelled(task.cancel)
             return requests, errors
 
@@ -596,10 +605,10 @@ class MainWindow(QMainWindow):
     def _account_display(self):
         if self.account:
             self.account_state.set_full(("大会员 · " if self.account.vip else "已登录 · ") + self.account.name)
-            self.account_button.setText("账号")
+            self.account_button.setText("B 站账号")
         else:
-            self.account_state.set_full("游客模式")
-            self.account_button.setText("扫码登录")
+            self.account_state.set_full("B 站游客")
+            self.account_button.setText("B 站登录")
 
     def _account_menu(self):
         if not self.account and not self.cookies:

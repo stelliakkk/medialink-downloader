@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QPlainTextEdit, QVBoxLayout
 
-from ..platform import share_links
+from ..links import share_links
 from .widgets import button, label
 
 
@@ -32,7 +32,7 @@ class LinkDialog(QDialog):
         layout.addWidget(description)
         self.input = QPlainTextEdit()
         self.input.setAccessibleName("批量视频链接")
-        self.input.setPlaceholderText("粘贴多个 B 站视频链接或分享文本")
+        self.input.setPlaceholderText("粘贴 B 站或抖音的视频链接和分享文本")
         layout.addWidget(self.input, 1)
         self.note = label(str(folder), "caption")
         self.note.setWordWrap(True)
@@ -43,7 +43,7 @@ class LinkDialog(QDialog):
     def accept(self):
         links = list(dict.fromkeys(share_links(self.input.toPlainText())))
         if not links or len(links) > 50:
-            self.note.setText("请粘贴 1–50 条 B 站视频或分享短链。")
+            self.note.setText("请粘贴 1–50 条 B 站或抖音视频链接。")
             return
         self.links = links
         super().accept()

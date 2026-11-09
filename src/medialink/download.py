@@ -13,7 +13,7 @@ import requests
 from urllib3.exceptions import HTTPError
 
 from .models import Formats, Output, Part, Track, UserError, Video, check_cancelled
-from .platform import Bilibili, UA
+from .platforms.bilibili import UA
 from .storage import ROOT
 from .tasks import SavedMedia
 
@@ -113,11 +113,11 @@ def _verify(info: dict, kind: str, expected_seconds: int, track: Track | None = 
 
 def _filename(video: Video, part: Part, quality: str) -> str:
     title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", video.title).strip(" .")
-    title = title[:70].strip(" .") or "Bilibili"
+    title = title[:70].strip(" .") or video.source.label
     segment = f" · P{part.number}" if len(video.parts) > 1 else ""
     safe_quality = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", quality)[:24].strip(" .")
     suffix = f" · {safe_quality}" if safe_quality else ""
-    return f"{title}{segment} [{video.bvid}]{suffix}"
+    return f"{title}{segment} [{video.video_id}]{suffix}"
 
 
 def _publish(folder: Path, pending: list[tuple[Path, str]], cancel: Event) -> tuple[Path, ...]:
@@ -143,14 +143,14 @@ def _publish(folder: Path, pending: list[tuple[Path, str]], cancel: Event) -> tu
 
 
 def save_media(
-    cookies: dict[str, str], video: Video, part: Part, quality_code: int | None,
+    resolve_formats: Callable[[Video, Part], Formats], video: Video, part: Part, quality_code: int | None,
     output: Output, folder: Path, cancel: Event, progress: Progress,
 ) -> SavedMedia:
     ffmpeg, ffprobe = (str(ROOT / "runtime" / exe) for exe in ("ffmpeg.exe", "ffprobe.exe"))
     if not all(Path(tool).is_file() for tool in (ffmpeg, ffprobe)):
         raise UserError("缺少随包的 FFmpeg 工具。请完整解压便携包后再启动。")
     folder.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix=".bili-", dir=folder) as temporary, Bilibili(cookies) as client:
+    with TemporaryDirectory(prefix=".medialink-", dir=folder) as temporary:
         temp = Path(temporary)
         video_path = temp / "video.m4s"
         audio_path = temp / "audio.m4s"
@@ -159,15 +159,26 @@ def save_media(
         for attempt in range(2):
             check_cancelled(cancel)
             progress("获取下载地址", 0, "正在查询当前可用的媒体轨道")
-            formats: Formats = client.formats(video, part)
+            formats = resolve_formats(video, part)
             if output is not Output.AUDIO:
                 quality = formats.select(selected_code)
                 selected_code = quality.code
+            track = quality.track if quality else (formats.select(None).track if formats.audio is None else None)
+            audio_input = audio_path
             try:
-                if quality and quality.track:
-                    _transfer(quality.track, video_path, video.url, cancel, progress, "下载画面", 0, 76)
-                start = 76 if quality else 0
-                _transfer(formats.audio, audio_path, video.url, cancel, progress, "下载音轨", start, 90 - start)
+                if track:
+                    _transfer(track, video_path, video.url, cancel, progress, "下载画面", 0, 76)
+                    combined = track.combined
+                    if combined is None:
+                        combined = any(stream["codec_type"] == "audio"
+                                       for stream in _probe(ffprobe, video_path, cancel)["streams"])
+                    if combined:
+                        audio_input = video_path
+                if audio_input == audio_path:
+                    if formats.audio is None:
+                        raise UserError("网页未提供可导出的音轨。")
+                    start = 76 if track else 0
+                    _transfer(formats.audio, audio_path, video.url, cancel, progress, "下载音轨", start, 90 - start)
                 break
             except MediaUnavailable:
                 if attempt:
@@ -179,14 +190,18 @@ def save_media(
         if quality and quality.track:
             progress("合并 MP4", 92, "保留原始画面与音轨")
             mp4 = temp / "output.mp4"
-            _run(base + ["-i", str(video_path), "-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0",
+            inputs = ["-i", str(video_path)]
+            if audio_input != video_path:
+                inputs += ["-i", str(audio_input)]
+            audio_map = "0:a:0" if audio_input == video_path else "1:a:0"
+            _run(base + inputs + ["-map", "0:v:0", "-map", audio_map,
                          "-c", "copy", "-movflags", "+faststart", str(mp4)], cancel)
             _verify(_probe(ffprobe, mp4, cancel), "mp4", part.seconds, quality.track)
             pending.append((mp4, _filename(video, part, quality.label)))
         if output is not Output.VIDEO:
             progress("转换 MP3", 95, "正在将原音轨编码为 MP3")
             mp3 = temp / "output.mp3"
-            _run(base + ["-i", str(audio_path), "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "320k", str(mp3)], cancel)
+            _run(base + ["-i", str(audio_input), "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "320k", str(mp3)], cancel)
             _verify(_probe(ffprobe, mp3, cancel), "mp3", part.seconds)
             pending.append((mp3, _filename(video, part, "")))
         progress("保存文件", 98, "正在写入最终文件名")

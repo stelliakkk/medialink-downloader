@@ -4,7 +4,7 @@ from yt_dlp import YoutubeDL
 from yt_dlp.extractor.bilibili import BiliBiliIE
 from yt_dlp.utils import DownloadError
 
-from .models import Part, Video
+from ..models import Part, Video
 
 
 class QuietLogger:
@@ -40,7 +40,7 @@ def guest_playback(video: Video, part: Part) -> dict | None:
             )
         except DownloadError:
             return None
-    if not info or info.get("id") not in {f"{video.bvid}_p{part.number}", video.bvid}:
+    if not info or info.get("id") not in {f"{video.video_id}_p{part.number}", video.video_id}:
         return None
     seconds = info.get("duration") or 0
     if seconds <= 0 or abs(part.seconds - seconds) > 3:

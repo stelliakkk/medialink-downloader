@@ -7,10 +7,11 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 
-from .models import Account, UserError, check_cancelled
-from .platform import (
+from ..links import trusted_link
+from ..models import Account, UserError, check_cancelled
+from .bilibili import (
     Bilibili, PASSPORT, WEB_COOKIES, json_response, request_session, response_data,
-    trusted_link, web_get,
+    web_get,
 )
 
 PASSPORT_QR = PASSPORT + "/x/passport-login/web/qrcode/"

@@ -22,6 +22,20 @@ class Output(Enum):
     BOTH = "MP4 + MP3"
 
 
+class Source(Enum):
+    BILIBILI = "bilibili"
+    DOUYIN = "douyin"
+
+    @property
+    def label(self) -> str:
+        return "B 站" if self is Source.BILIBILI else "抖音"
+
+    def url(self, video_id: str, page: int | None = None) -> str:
+        if self is Source.DOUYIN:
+            return f"https://www.douyin.com/video/{video_id}"
+        return f"https://www.bilibili.com/video/{video_id}/" + (f"?p={page}" if page is not None else "")
+
+
 @dataclass(frozen=True, slots=True)
 class Part:
     number: int
@@ -32,15 +46,16 @@ class Part:
 
 @dataclass(frozen=True, slots=True)
 class Video:
-    bvid: str
+    video_id: str
     title: str
     author: str
     cover_url: str
     parts: tuple[Part, ...]
+    source: Source = Source.BILIBILI
 
     @property
     def url(self) -> str:
-        return f"https://www.bilibili.com/video/{self.bvid}/"
+        return self.source.url(self.video_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +66,7 @@ class Track:
     width: int = 0
     height: int = 0
     fps: str = ""
+    combined: bool | None = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +79,7 @@ class Quality:
 @dataclass(frozen=True, slots=True)
 class Formats:
     qualities: tuple[Quality, ...]
-    audio: Track
+    audio: Track | None
 
     def select(self, code: int | None) -> Quality:
         for quality in self.qualities:

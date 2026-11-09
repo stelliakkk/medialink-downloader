@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QCoreApplication
 
-from bili_downloader.models import Output, Part, UserError, check_cancelled
-from bili_downloader.queue import DownloadQueue, execute_request
-from bili_downloader.tasks import Request, SavedMedia, State, TaskStore
+from medialink.models import Output, Part, UserError, check_cancelled
+from medialink.queue import DownloadQueue, execute_request
+from medialink.tasks import Request, SavedMedia, State, TaskStore
 
 
 class QueueTests(unittest.TestCase):
@@ -160,7 +160,7 @@ class QueueTests(unittest.TestCase):
 
     def test_changed_part_identity_stops_before_downloading(self):
         request = replace(self.first, cid=123)
-        with patch("bili_downloader.queue.Bilibili") as api, patch("bili_downloader.queue.save_media") as save:
+        with patch("medialink.queue.open_source") as api, patch("medialink.queue.save_media") as save:
             api.return_value.__enter__.return_value.resolve.return_value = (None, Part(1, 456, "替换片段", 10))
             with self.assertRaisesRegex(UserError, "分 P 已调整"):
                 execute_request(request, {}, SimpleNamespace(cancel=Event()))

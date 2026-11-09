@@ -4,8 +4,8 @@ from tempfile import TemporaryDirectory
 import sqlite3
 import unittest
 
-from bili_downloader.models import Output
-from bili_downloader.tasks import Request, SavedMedia, State, TaskStore
+from medialink.models import Output, Source
+from medialink.tasks import Request, SavedMedia, State, TaskStore
 
 
 class TaskStoreTests(unittest.TestCase):
@@ -113,6 +113,32 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual([item.request.page for item in self.store.history(State.FAILED, limit=1)], [3])
         self.assertEqual([item.request.page for item in self.store.history(State.FAILED, limit=1, offset=1)], [1])
         self.assertEqual(len(self.store.history()), 3)
+
+    def test_platforms_have_separate_duplicate_keys(self):
+        dy = replace(self.request, source=Source.DOUYIN)
+        result = self.store.enqueue([self.request, dy, dy])
+        self.assertEqual((result.added, result.duplicates), (2, 1))
+        self.assertEqual([item.request.source for item in self.store.active()], [Source.BILIBILI, Source.DOUYIN])
+
+    def test_migrates_legacy_history_and_waiting_rows(self):
+        self.store.enqueue([self.request, replace(self.request, page=2)])
+        finished = self.store.claim()
+        path = self.folder / "old.mp4"
+        path.touch()
+        self.store.finish(finished.id, State.DONE, SavedMedia((path,), 80, "1080P 高清"), "")
+        self.store.db.executescript("""
+            DROP INDEX task_source_identity;
+            ALTER TABLE tasks DROP COLUMN source;
+            ALTER TABLE tasks RENAME COLUMN video_id TO bvid;
+            CREATE INDEX task_identity ON tasks(bvid,page,output,folder_key);
+        """)
+        migrated = TaskStore(self.db)
+        self.addCleanup(migrated.close)
+        completed, = migrated.history()
+        waiting, = migrated.active()
+        self.assertEqual((completed.id, completed.request, completed.media.files), (finished.id, self.request, (path,)))
+        self.assertEqual((waiting.request.page, waiting.request.source), (2, Source.BILIBILI))
+        self.assertEqual(migrated.enqueue([self.request]).duplicates, 1)
 
 
 if __name__ == "__main__":

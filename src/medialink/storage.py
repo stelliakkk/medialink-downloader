@@ -8,7 +8,8 @@ from pathlib import Path
 import sys
 from tempfile import NamedTemporaryFile
 
-from .platform import WEB_COOKIES
+from . import APP_ID
+from .platforms.bilibili import WEB_COOKIES
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
 
@@ -61,7 +62,7 @@ class Storage:
             if directory is not None:
                 raise
             base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
-            self.directory = base / "BiliDownloader"
+            self.directory = base / APP_ID
             self.directory.mkdir(parents=True, exist_ok=True)
         self.settings = self.directory / "settings.json"
         self.credential = self.directory / "bilibili-session.dat"
@@ -88,7 +89,7 @@ class Storage:
                 return path
         except (OSError, ValueError, TypeError, KeyError):
             pass
-        return Path.home() / "Downloads" / "BiliDownloader"
+        return Path.home() / "Downloads" / APP_ID
 
     def save_folder(self, folder: Path) -> None:
         atomic_write(self.settings, json.dumps({"folder": str(folder)}, ensure_ascii=False).encode())

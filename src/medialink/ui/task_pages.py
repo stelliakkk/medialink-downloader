@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..models import Output
-from ..platform import QUALITY_NAMES
+from ..models import Output, Source
+from ..platforms.bilibili import QUALITY_NAMES
 from ..tasks import State
 from .widgets import ComboBox, FitLabel, button, label
 
@@ -25,7 +25,9 @@ def quality_label(task):
     code = task.request.quality
     if task.request.output is Output.AUDIO:
         return "音频"
-    return task.media.label or (QUALITY_NAMES.get(code, f"档位 {code}") if code else "最高可用")
+    if task.media.label or code is None:
+        return task.media.label or "最高可用"
+    return f"{code}P" if task.request.source is Source.DOUYIN else QUALITY_NAMES.get(code, f"档位 {code}")
 
 
 class TaskTable(QTableWidget):
@@ -55,7 +57,7 @@ class TaskTable(QTableWidget):
         self.tasks = tuple(tasks)
         self.setRowCount(len(tasks))
         for row, task in enumerate(tasks):
-            values = [task.request.display, quality_label(task), task.request.output.value,
+            values = [task.request.display, task.request.source.label, quality_label(task), task.request.output.value,
                       STATE_LABELS[task.state], *extra_columns(task)]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -91,7 +93,7 @@ class QueuePage(QWidget):
         self.batch_note = FitLabel("", "caption")
         self.batch_note.hide()
         layout.addWidget(self.batch_note)
-        self.table = TaskTable(("视频 / 分 P", "画质", "输出", "状态"))
+        self.table = TaskTable(("视频 / 分 P", "平台", "画质", "输出", "状态"))
         self.table.setAccessibleName("下载队列")
         self.table.itemSelectionChanged.connect(self._selection)
         layout.addWidget(self.table, 1)
@@ -166,7 +168,7 @@ class HistoryPage(QWidget):
         for control in (self.open_file, self.open_folder, self.retry):
             actions.addWidget(control)
         layout.addLayout(actions)
-        self.table = TaskTable(("视频 / 分 P", "画质", "输出", "结果", "结束时间"))
+        self.table = TaskTable(("视频 / 分 P", "平台", "画质", "输出", "结果", "结束时间"))
         self.table.setAccessibleName("下载历史")
         self.table.itemSelectionChanged.connect(self.refresh_actions)
         layout.addWidget(self.table, 1)

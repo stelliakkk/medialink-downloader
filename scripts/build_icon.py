@@ -6,7 +6,7 @@ from PySide6.QtCore import QBuffer, QIODevice
 from PySide6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from bili_downloader.ui.widgets import app_icon
+from medialink.ui.widgets import app_icon
 
 
 def main(path: Path) -> None:

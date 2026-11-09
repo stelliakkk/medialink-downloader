@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout
 
-from ..auth import login
+from ..platforms.bili_auth import login
 from ..workers import Worker
 from .widgets import button, label, set_role
 

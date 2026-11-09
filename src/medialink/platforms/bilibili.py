@@ -8,8 +8,9 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 import requests
 
-from .extractor import guest_playback
-from .models import Account, Formats, Part, Quality, Track, UserError, Video
+from .bili_extractor import guest_playback
+from ..links import BILI_HOSTS, BILI_VIDEO_HOSTS, share_links, trusted_link
+from ..models import Account, Formats, Part, Quality, Track, UserError, Video
 
 HOME = "https://www.bilibili.com/"
 API = "https://api.bilibili.com"
@@ -20,10 +21,7 @@ UA = (
 )
 TIMEOUT = (6, 9)
 WEB_COOKIES = frozenset(("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5", "buvid3"))
-VIDEO_HOSTS = frozenset(("www.bilibili.com", "bilibili.com", "m.bilibili.com"))
-LINK_HOSTS = VIDEO_HOSTS | {"b23.tv"}
 VIDEO_PATH = re.compile(r"/video/(BV[A-Za-z0-9]{10}|av[1-9][0-9]*)/?")
-SHARE_LINK = re.compile(r"(?:https?://)?(?:[\w.-]+\.)?(?:bilibili\.com|b23\.tv)/[^\s<>\"【】]+", re.I)
 WBI_ORDER = (
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
     33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61,
@@ -75,18 +73,6 @@ def web_get(session: requests.Session, url: str, **options) -> requests.Response
         raise UserError("连接 B 站失败，请检查网络后重试。") from None
 
 
-def trusted_link(url: str, hosts: frozenset[str] | set[str]) -> bool:
-    try:
-        parsed = urlsplit(url)
-        return (
-            parsed.scheme == "https" and parsed.hostname in hosts
-            and parsed.port in (None, 443) and parsed.username is None
-            and parsed.password is None
-        )
-    except ValueError:
-        return False
-
-
 def request_session(cookies: dict[str, str] | None = None) -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": UA, "Referer": HOME, "Origin": HOME.rstrip("/")})
@@ -96,25 +82,16 @@ def request_session(cookies: dict[str, str] | None = None) -> requests.Session:
     return session
 
 
-def share_links(text: str):
-    for match in SHARE_LINK.finditer(text):
-        yield match[0].rstrip("。，、；！？）)]")
-
-
 def normalize_link(text: str, session: requests.Session) -> tuple[str, int]:
     link = next(share_links(text), None)
     if link is None:
         raise UserError("请粘贴 B 站普通视频链接或 b23.tv 分享链接。")
-    if not re.match(r"https?://", link, re.I):
-        link = "https://" + link
-    if link.lower().startswith("http://"):
-        link = "https://" + link[7:]
-    if not trusted_link(link, LINK_HOSTS):
+    if not trusted_link(link, BILI_HOSTS):
         raise UserError("链接需要来自 bilibili.com 或 b23.tv。")
     original_page = parse_qs(urlsplit(link).query).get("p", ["1"])[0]
     for _ in range(5):
         parsed = urlsplit(link)
-        if parsed.hostname in VIDEO_HOSTS:
+        if parsed.hostname in BILI_VIDEO_HOSTS:
             video_id = VIDEO_PATH.fullmatch(parsed.path)
             if not video_id:
                 break
@@ -124,7 +101,7 @@ def normalize_link(text: str, session: requests.Session) -> tuple[str, int]:
             return video_id[1], int(page)
         with web_get(session, link, stream=True) as response:
             target = urljoin(link, response.headers.get("Location", ""))
-            if not response.is_redirect or not trusted_link(target, LINK_HOSTS):
+            if not response.is_redirect or not trusted_link(target, BILI_HOSTS):
                 break
             link = target
     raise UserError("这个链接没有指向普通投稿视频。")
@@ -227,7 +204,7 @@ class Bilibili:
         return video, part
 
     def formats(self, video: Video, part: Part) -> Formats:
-        params = {"bvid": video.bvid, "cid": part.cid, "qn": 127, "fnval": 4048, "fourk": 1}
+        params = {"bvid": video.video_id, "cid": part.cid, "qn": 127, "fnval": 4048, "fourk": 1}
         with web_get(
             self.session, API + "/x/player/playurl", params=params, headers={"Referer": video.url},
         ) as response:
