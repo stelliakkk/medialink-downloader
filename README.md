@@ -1,6 +1,6 @@
 # MediaLink 下载器
 
-MediaLink Downloader · Windows x64 · v3.0.0
+MediaLink Downloader · Windows x64 · v3.0.1
 
 在一个窗口下载哔哩哔哩和抖音的普通视频。支持选画质、保存带声 MP4、导出 MP3，以及共用的下载队列和历史。程序在本机解析和保存文件。请下载你有权保存的内容。
 
@@ -19,7 +19,7 @@ MP4 保留源画面和音轨，MP3 从音轨编码为 320 kbps。临时地址失
 
 默认保存到 `Downloads\MediaLinkDownloader`。设置、任务数据库和经 Windows DPAPI 加密的 B 站会话保存在可执行文件旁的 `data`。目录不可写时使用 `%LOCALAPPDATA%\MediaLinkDownloader`。
 
-从旧版升级时，先关闭新旧程序，再把旧版的 `data` 复制到新版目录后启动。如果旧版使用系统回退目录，来源为 `%LOCALAPPDATA%\BiliDownloader`。新版自动给原任务和历史补上 B 站来源，保留任务 ID、分 P 和已保存文件的位置。旧版数据副本可作为回退备份。
+从旧版升级时，先关闭新旧程序，再把旧版的 `data` 复制到新版目录后启动。如果旧版使用系统回退目录，MediaLink 的数据在 `%LOCALAPPDATA%\MediaLinkDownloader`，更早的 B 站下载器数据在 `%LOCALAPPDATA%\BiliDownloader`。新版自动给原任务和历史补上 B 站来源，保留任务 ID、分 P 和已保存文件的位置。旧版数据副本可作为回退备份。
 
 ## 开发
 

@@ -11,13 +11,17 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from time import monotonic
 from urllib.parse import parse_qs, urlsplit
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 
 from websocket import WebSocketException, WebSocketTimeoutException, create_connection
 
 from ..models import UserError, check_cancelled
 
 DETAIL = "/aweme/v1/web/aweme/detail/"
+
+
+class _StartupError(UserError):
+    """The isolated Edge session failed before navigation."""
 
 
 def _edge_path() -> Path:
@@ -29,29 +33,57 @@ def _edge_path() -> Path:
     raise UserError("解析抖音需要 Microsoft Edge，请安装或修复 Edge 后重试。")
 
 
+def _blank_page_id(tab: dict) -> str:
+    if not isinstance(tab, dict):
+        return ""
+    target = tab.get("id")
+    if (tab.get("type") == "page" and tab.get("url") == "about:blank"
+            and isinstance(target, str) and re.fullmatch("[A-Fa-f0-9]{32}", target)):
+        return target
+    return ""
+
+
 def _debugger(profile: Path, process, cancel: Event):
     port_file = profile / "DevToolsActivePort"
     local = build_opener(ProxyHandler({}))
     deadline = monotonic() + 12
+    page = ""
+    endpoint_ready = False
     while monotonic() < deadline and process.poll() is None:
         check_cancelled(cancel)
         try:
             port = int(port_file.read_text(encoding="ascii").splitlines()[0])
             if not 1 <= port <= 65535:
                 raise ValueError("Invalid port")
-            with local.open(f"http://127.0.0.1:{port}/json/list", timeout=1) as response:
-                tabs = json.load(response)
-            tab = next((tab["id"] for tab in tabs if tab["type"] == "page" and tab["url"] == "about:blank"), "")
-            if re.fullmatch("[A-Fa-f0-9]{32}", tab):
+            if not page:
+                origin = f"http://127.0.0.1:{port}"
+                with local.open(f"{origin}/json/list", timeout=1) as response:
+                    tabs = json.load(response)
+                if not isinstance(tabs, list):
+                    raise ValueError("Invalid target list")
+                endpoint_ready = True
+                page = next((target for tab in tabs if (target := _blank_page_id(tab))), "")
+                if not page:
+                    # A fresh Edge profile can open its own page instead of the requested blank one.
+                    check_cancelled(cancel)
+                    request = Request(f"{origin}/json/new?about:blank", method="PUT")
+                    with local.open(request, timeout=1) as response:
+                        page = _blank_page_id(json.load(response))
+            if page:
+                check_cancelled(cancel)
                 return create_connection(
-                    f"ws://127.0.0.1:{port}/devtools/page/{tab}", timeout=0.7,
+                    f"ws://127.0.0.1:{port}/devtools/page/{page}", timeout=0.7,
                     suppress_origin=True, http_no_proxy=["127.0.0.1"],
                 )
         except (OSError, ValueError, IndexError, WebSocketException):
-            pass
+            page = ""
         cancel.wait(0.15)
     check_cancelled(cancel)
-    raise UserError("无法启动 Edge 的抖音解析会话，请重试。")
+    if process.poll() is not None:
+        raise _StartupError("Edge 在解析抖音前退出。请确认 Microsoft Edge 能正常打开，再试一次。")
+    if endpoint_ready:
+        raise _StartupError("Edge 已启动，但未能连接抖音解析标签页，请重试。")
+    raise _StartupError("未能连接 Edge 的本机调试端口。请确认 Microsoft Edge 能正常打开，再试一次。")
 
 
 def _send(socket, number, method, **params):
@@ -146,9 +178,14 @@ def _read_detail(socket, video_id: str, cancel: Event) -> dict:
 
 
 def playback_detail(video_id: str, cancel: Event) -> dict:
-    try:
-        with _guest_tab(cancel) as socket:
-            return _read_detail(socket, video_id, cancel)
-    except (OSError, ValueError, WebSocketException):
-        check_cancelled(cancel)
-        raise UserError("抖音网页解析会话中断，请重试。") from None
+    for attempt in range(2):
+        try:
+            with _guest_tab(cancel) as socket:
+                return _read_detail(socket, video_id, cancel)
+        except _StartupError:
+            check_cancelled(cancel)
+            if attempt:
+                raise
+        except (OSError, ValueError, WebSocketException):
+            check_cancelled(cancel)
+            raise UserError("抖音网页解析会话中断，请重试。") from None

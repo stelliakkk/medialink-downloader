@@ -1,12 +1,13 @@
+from contextlib import nullcontext
 import json
 from threading import Event
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from medialink.links import input_link, share_links
-from medialink.models import Source, UserError
+from medialink.models import Cancelled, Source, UserError
 from medialink.platforms.douyin import parse_playback
-from medialink.platforms.edge import _read_detail
+from medialink.platforms.edge import _StartupError, _read_detail, playback_detail
 
 
 VIDEO_ID = "7705856425225932082"
@@ -67,6 +68,29 @@ class DouyinTests(unittest.TestCase):
         reads = [json.loads(call.args[0]) for call in socket.send.call_args_list]
         self.assertEqual([call["params"]["requestId"] for call in reads
                           if call["method"] == "Network.getResponseBody"], ["target"])
+
+    @patch("medialink.platforms.edge._guest_tab")
+    def test_retries_startup_failure_but_not_playback_failure(self, guest_tab):
+        socket = Mock()
+        guest_tab.side_effect = [_StartupError("startup failed"), nullcontext(socket)]
+        with patch("medialink.platforms.edge._read_detail", side_effect=UserError("no playback")) as read:
+            with self.assertRaisesRegex(UserError, "no playback"):
+                playback_detail(VIDEO_ID, Event())
+        self.assertEqual(guest_tab.call_count, 2)
+        read.assert_called_once()
+
+    @patch("medialink.platforms.edge._guest_tab")
+    def test_cancelling_during_failed_startup_skips_retry(self, guest_tab):
+        cancel = Event()
+
+        def abort(_cancel):
+            cancel.set()
+            raise _StartupError("startup failed")
+
+        guest_tab.side_effect = abort
+        with self.assertRaises(Cancelled):
+            playback_detail(VIDEO_ID, cancel)
+        guest_tab.assert_called_once()
 
 
 if __name__ == "__main__":
