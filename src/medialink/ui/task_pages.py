@@ -25,6 +25,10 @@ def quality_label(task):
     code = task.request.quality
     if task.request.output is Output.AUDIO:
         return "音频"
+    if task.request.output is Output.ASSETS:
+        return task.media.label or "图文素材"
+    if task.request.is_note:
+        return "图文合成"
     if task.media.label or code is None:
         return task.media.label or "最高可用"
     return f"{code}P" if task.request.source is Source.DOUYIN else QUALITY_NAMES.get(code, f"档位 {code}")
@@ -222,8 +226,12 @@ class HistoryPage(QWidget):
 
     @staticmethod
     def _files(task):
+        extensions = {".mp4", ".mp3"}
+        if task and task.request.output is Output.ASSETS:
+            extensions.update((".jpg", ".png", ".webp", ".gif", ".bmp", ".tif", ".jp2", ".avif",
+                               ".webm", ".ts", ".m4a", ".aac", ".flac", ".wav", ".ogg"))
         return [path for path in task.media.files
-                if path.suffix.lower() in (".mp4", ".mp3") and path.is_absolute() and path.is_file()] if task else []
+                if path.suffix.lower() in extensions and path.is_absolute() and path.is_file()] if task else []
 
     def _open(self, folder):
         task = self.table.selected()
@@ -233,6 +241,8 @@ class HistoryPage(QWidget):
         path = task.request.folder if folder and task.request.folder.is_dir() else (
             files[0] if not folder and files else None
         )
+        if folder and task.request.output is Output.ASSETS and files:
+            path = files[0].parent
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         self.refresh_actions()

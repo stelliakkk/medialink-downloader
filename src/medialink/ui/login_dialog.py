@@ -17,11 +17,14 @@ def qr_pixmap(url: str) -> QPixmap:
     pixmap = QPixmap(len(matrix) * scale, len(matrix) * scale)
     pixmap.fill(QColor("#ffffff"))
     painter = QPainter(pixmap)
-    for row, modules in enumerate(matrix):
-        for column, black in enumerate(modules):
-            if black:
-                painter.fillRect(column * scale, row * scale, scale, QColor("#25211e"))
-    painter.end()
+    color = QColor("#25211e")
+    try:
+        for row, modules in enumerate(matrix):
+            for column, black in enumerate(modules):
+                if black:
+                    painter.fillRect(column * scale, row * scale, scale, scale, color)
+    finally:
+        painter.end()
     return pixmap
 
 
@@ -77,6 +80,7 @@ class LoginDialog(QDialog):
     def _show_qr(self, url):
         if not self.worker.cancel.is_set():
             self.tile.setPixmap(qr_pixmap(url))
+            self._status("请用手机哔哩哔哩 App 扫码")
 
     def _status(self, message):
         if not self.worker or not self.worker.cancel.is_set():

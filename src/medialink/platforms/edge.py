@@ -15,7 +15,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from websocket import WebSocketException, WebSocketTimeoutException, create_connection
 
-from ..models import UserError, check_cancelled
+from ..models import Source, UserError, check_cancelled
 
 DETAIL = "/aweme/v1/web/aweme/detail/"
 
@@ -138,9 +138,51 @@ def _guest_tab(cancel: Event):
                 process.wait()
 
 
-def _read_detail(socket, video_id: str, cancel: Event) -> dict:
+def _find_note(value, note_id: str) -> dict | None:
+    if isinstance(value, dict):
+        if value.get("awemeId") == note_id and value.get("images"):
+            return value
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        if match := _find_note(child, note_id):
+            return match
+    return None
+
+
+def _note_document(html: str, note_id: str) -> dict | None:
+    prefix = "self.__pace_f.push("
+    for script in re.finditer(r"<script\b[^>]*>(.*?)</script\s*>", html, re.S | re.I):
+        content = script[1].strip().removesuffix(";")
+        if not content.startswith(prefix) or not content.endswith(")") or note_id not in content:
+            continue
+        try:
+            chunk = json.loads(content[len(prefix):-1])
+        except ValueError:
+            continue
+        if not isinstance(chunk, list) or len(chunk) != 2 or chunk[0] != 1 or not isinstance(chunk[1], str):
+            continue
+        for line in chunk[1].splitlines():
+            key, _, payload = line.partition(":")
+            if not re.fullmatch(r"[0-9a-f]+", key) or note_id not in payload:
+                continue
+            try:
+                item = _find_note(json.loads(payload), note_id)
+            except (ValueError, RecursionError):
+                continue
+            if item:
+                return item
+    return None
+
+
+def _read_detail(socket, video_id: str, cancel: Event, *, is_note: bool = False) -> dict:
+    target = Source.DOUYIN.url(video_id, is_note=is_note)
+    path = urlsplit(target).path
     _send(socket, 1, "Network.enable", maxTotalBufferSize=20_000_000, maxResourceBufferSize=5_000_000)
-    _send(socket, 2, "Page.navigate", url=f"https://www.douyin.com/video/{video_id}")
+    _send(socket, 2, "Page.navigate", url=target)
     deadline = monotonic() + 26
     requests, reads = set(), set()
     command = 10
@@ -155,9 +197,12 @@ def _read_detail(socket, video_id: str, cancel: Event) -> dict:
         if event == "Network.responseReceived":
             response = params["response"]
             url = urlsplit(response["url"])
-            if (url.scheme == "https" and url.hostname == "www.douyin.com"
-                    and url.path == DETAIL and response["status"] == 200
-                    and parse_qs(url.query).get("aweme_id") == [video_id]):
+            if url.scheme != "https" or url.hostname != "www.douyin.com" or response["status"] != 200:
+                continue
+            is_document = is_note and params.get("type") == "Document" and url.path.rstrip("/") == path
+            is_video_detail = (not is_note and url.path == DETAIL
+                               and parse_qs(url.query).get("aweme_id") == [video_id])
+            if is_document or is_video_detail:
                 requests.add(params["requestId"])
         elif event == "Network.loadingFinished" and params["requestId"] in requests:
             requests.remove(params["requestId"])
@@ -167,21 +212,29 @@ def _read_detail(socket, video_id: str, cancel: Event) -> dict:
         elif message.get("id") in reads:
             reads.remove(message["id"])
             result = message.get("result") or {}
-            body = result.get("body") or "{}"
-            data = json.loads(base64.b64decode(body) if result.get("base64Encoded") else body)
+            body = result.get("body") or ""
+            if result.get("base64Encoded"):
+                body = base64.b64decode(body).decode("utf-8")
+            if is_note:
+                if item := _note_document(body, video_id):
+                    return item
+                continue
+            data = json.loads(body or "{}")
             item = data.get("aweme_detail") or {}
             if str(item.get("aweme_id")) == video_id:
                 return item
             if data.get("status_code") not in (0, None):
                 break
+    if is_note:
+        raise UserError("抖音网页未返回这条图文的图片数据。请检查该作品能否在网页中查看。")
     raise UserError("抖音网页未返回这个视频的播放数据。请检查链接及网页能否正常播放。")
 
 
-def playback_detail(video_id: str, cancel: Event) -> dict:
+def playback_detail(video_id: str, cancel: Event, *, is_note: bool = False) -> dict:
     for attempt in range(2):
         try:
             with _guest_tab(cancel) as socket:
-                return _read_detail(socket, video_id, cancel)
+                return _read_detail(socket, video_id, cancel, is_note=is_note)
         except _StartupError:
             check_cancelled(cancel)
             if attempt:

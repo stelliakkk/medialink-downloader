@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 import json
+from math import ceil
 from pathlib import Path
 import re
 import subprocess
@@ -12,7 +13,7 @@ from time import monotonic
 import requests
 from urllib3.exceptions import HTTPError
 
-from .models import Formats, Output, Part, Track, UserError, Video, check_cancelled
+from .models import AssetOptions, Formats, ImageFormat, Output, Part, Track, UserError, Video, check_cancelled
 from .platforms.bilibili import UA
 from .storage import ROOT
 from .tasks import SavedMedia
@@ -92,10 +93,11 @@ def _probe(tool: str, file: Path, cancel: Event) -> dict:
     return json.loads(_run([tool, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(file)], cancel))
 
 
-def _verify(info: dict, kind: str, expected_seconds: int, track: Track | None = None) -> None:
+def _verify(info: dict, kind: str, expected_seconds: int | float, track: Track | None = None,
+            *, audio_required: bool = True) -> None:
     by_type = {stream["codec_type"]: stream for stream in info["streams"]}
     audio = by_type.get("audio")
-    if not audio:
+    if (kind == "mp3" or audio_required) and not audio:
         raise UserError("文件缺少音轨，下载未保存。")
     if kind == "mp4":
         video = by_type.get("video", {})
@@ -103,7 +105,9 @@ def _verify(info: dict, kind: str, expected_seconds: int, track: Track | None = 
             raise UserError("视频尺寸与所选档位不一致，下载未保存。")
     elif audio.get("codec_name") != "mp3":
         raise UserError("音频格式与所选格式不一致，下载未保存。")
-    streams = (audio, by_type["video"]) if kind == "mp4" else (audio,)
+    streams = [by_type["video"]] if kind == "mp4" else []
+    if audio:
+        streams.append(audio)
     duration = float(info["format"].get("duration") or 0)
     for stream in streams:
         seconds = float(stream.get("duration") or duration)
@@ -142,9 +146,188 @@ def _publish(folder: Path, pending: list[tuple[Path, str]], cancel: Event) -> tu
     raise UserError("保存目录中存在太多同名文件，请更换目录。")
 
 
+def _export_mp3(base: list[str], audio: Path, target: Path, ffprobe: str,
+                seconds: int | float, cancel: Event, progress: Progress) -> None:
+    progress("转换 MP3", 95, "正在将音轨编码为 MP3")
+    _run(base + ["-i", str(audio), "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "320k", str(target)], cancel)
+    _verify(_probe(ffprobe, target, cancel), "mp3", seconds)
+
+
+def _slide_canvas(image: Track) -> Track:
+    width, height = (image.width, image.height) if image.width and image.height else (1080, 1920)
+    scale = min(1, 1920 / max(width, height), 1080 / min(width, height))
+    return Track((), "h264", 0, max(2, round(width * scale / 2) * 2),
+                 max(2, round(height * scale / 2) * 2))
+
+
+def _asset_suffix(info: dict, kind: str) -> str:
+    streams = {stream["codec_type"]: stream["codec_name"] for stream in info["streams"]}
+    container = info["format"]["format_name"]
+    if kind == "图片":
+        suffix = {
+            "mjpeg": "jpg", "png": "png", "apng": "png", "webp": "webp", "gif": "gif",
+            "bmp": "bmp", "tiff": "tif", "jpeg2000": "jp2", "av1": "avif",
+        }.get(streams.get("video")) if container.endswith("_pipe") or container in ("apng", "gif", "avif") else None
+    elif kind == "片段":
+        suffix = "mp4" if "mp4" in container.split(",") else {
+            "matroska,webm": "webm", "mpegts": "ts",
+        }.get(container)
+        if "video" not in streams:
+            suffix = None
+    else:
+        suffix = "m4a" if "mp4" in container.split(",") else {
+            "mp3": "mp3", "aac": "aac", "flac": "flac", "wav": "wav", "ogg": "ogg",
+        }.get(container)
+        if "audio" not in streams:
+            suffix = None
+    if not suffix:
+        raise UserError(f"抖音返回了无法识别的{kind}格式。")
+    return "." + suffix
+
+
+def _convert_picture(raw: Path, suffix: str, ffmpeg: str, cancel: Event) -> tuple[Path, str]:
+    if suffix in (".png", ".gif"):
+        return raw, suffix
+    if suffix == ".webp":
+        with raw.open("rb") as file:
+            header = file.read(21)
+        if len(header) == 21 and header[12:16] == b"VP8X" and header[20] & 0x02:
+            return raw, suffix  # An animated WebP must keep its frames.
+    destination = raw.with_suffix(".png")
+    _run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(raw),
+          "-map", "0:v:0", "-frames:v", "1", "-c:v", "png", "-update", "1", str(destination)], cancel)
+    return destination, ".png"
+
+
+def _save_note_assets(resolve_formats: Callable[[Video, Part], Formats], video: Video, part: Part,
+                      folder: Path, temp: Path, ffmpeg: str, ffprobe: str, options: AssetOptions,
+                      cancel: Event, progress: Progress) -> SavedMedia:
+    target = temp / "assets"
+    target.mkdir()
+    for attempt in range(2):
+        progress("获取下载地址", 0, "正在查询可单独保存的图文素材")
+        formats = resolve_formats(video, part)
+        assets = []
+        for index, slide in enumerate(formats.slides, 1):
+            if slide.image and (options.include_clip_covers or not slide.is_clip_cover):
+                name = "图片"
+                if slide.is_live:
+                    name = "实况静帧"
+                elif slide.is_clip_cover or slide.motion_unavailable:
+                    name = "封面"
+                assets.append((f"{index:02d}-{name}", "图片", slide.image))
+            if slide.clip:
+                name = "实况片段" if slide.is_live else "片段"
+                assets.append((f"{index:02d}-{name}", "片段", slide.clip))
+        if formats.audio:
+            assets.append(("配乐", "音频", formats.audio))
+        if not assets:
+            raise UserError("抖音没有返回可单独保存的素材。")
+        filenames = []
+        try:
+            for index, (name, kind, track) in enumerate(assets):
+                raw = temp / "asset.media"
+                start, end = 95 * index // len(assets), 95 * (index + 1) // len(assets)
+                _transfer(track, raw, video.url, cancel, progress, f"下载{kind}", start, end - start)
+                suffix = _asset_suffix(_probe(ffprobe, raw, cancel), kind)
+                if kind == "图片" and options.image_format is ImageFormat.PNG and suffix not in (".png", ".gif"):
+                    progress("转换图片", end, f"正在处理 {name}")
+                    raw, suffix = _convert_picture(raw, suffix, ffmpeg, cancel)
+                filename = name + suffix
+                raw.replace(target / filename)
+                filenames.append(filename)
+            break
+        except MediaUnavailable:
+            if attempt:
+                raise
+            for filename in filenames:
+                (target / filename).unlink()
+            progress("刷新媒体地址", None, "正在重新获取图文素材")
+    progress("保存文件", 98, "正在写入素材文件夹")
+    (published,) = _publish(folder, [(target, _filename(video, part, "图文素材"))], cancel)
+    notice = " · 有片段未提供独立地址" if any(s.motion_unavailable for s in formats.slides) else ""
+    progress("下载完成", 100, f"已保存 {len(filenames)} 个文件{notice}")
+    return SavedMedia(tuple(published / filename for filename in filenames), label="图文素材" + notice)
+
+
+def _save_note(resolve_formats: Callable[[Video, Part], Formats], video: Video, part: Part,
+               output: Output, folder: Path, temp: Path, ffmpeg: str, ffprobe: str,
+               cancel: Event, progress: Progress) -> SavedMedia:
+    audio = temp / "music.media"
+    for attempt in range(2):
+        check_cancelled(cancel)
+        progress("获取下载地址", 0, "正在查询图文图片和配乐")
+        formats = resolve_formats(video, part)
+        if output is not Output.AUDIO and formats.has_motion:
+            raise UserError("这条图文含视频片段，请选择「分开保存素材」。")
+        if output is not Output.VIDEO and formats.audio is None:
+            raise UserError("这条图文没有可导出的配乐，请选择视频 MP4。")
+        images = []
+        try:
+            if output is not Output.AUDIO:
+                count = len(formats.slides)
+                for index, slide in enumerate(formats.slides):
+                    file = temp / f"image-{index}.media"
+                    start, end = 60 * index // count, 60 * (index + 1) // count
+                    _transfer(slide.image, file, video.url, cancel, progress, f"下载图片 {index + 1}/{count}", start, end - start)
+                    images.append(file)
+            if formats.audio:
+                start = 60 if images else 0
+                _transfer(formats.audio, audio, video.url, cancel, progress, "下载配乐", start, 80 - start)
+            break
+        except MediaUnavailable:
+            if attempt:
+                raise
+            progress("刷新媒体地址", None, "正在重新获取图文素材")
+
+    seconds = len(images) * 3.0
+    if formats.audio:
+        info = _probe(ffprobe, audio, cancel)
+        seconds = float(info["format"].get("duration") or 0)
+        if seconds <= 0:
+            raise UserError("无法读取图文配乐的时长。")
+
+    pending = []
+    base = [ffmpeg, "-nostdin", "-v", "error"]
+    if images:
+        canvas = _slide_canvas(formats.slides[0].image)
+        size = f"{canvas.width}:{canvas.height}"
+        filters = (f"scale={size}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                   f"pad={size}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                   "loop=loop=-1:size=1:start=0,setpts=N/(30*TB),fps=30")
+        frame_count = max(ceil(seconds * 30), len(images))
+        segments = []
+        for index, image in enumerate(images):
+            progress("合成图文视频", 81 + 10 * index // len(images), f"正在处理第 {index + 1} / {len(images)} 张")
+            segment = temp / f"slide-{index}.mp4"
+            frames = frame_count * (index + 1) // len(images) - frame_count * index // len(images)
+            _run(base + ["-i", str(image), "-map", "0:v:0", "-vf", filters, "-frames:v", str(frames),
+                         "-an", "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", str(segment)], cancel)
+            segments.append(segment)
+        playlist = temp / "slides.txt"
+        playlist.write_text("".join(f"file '{file.name}'\n" for file in segments), encoding="ascii")
+        mp4 = temp / "output.mp4"
+        inputs = ["-f", "concat", "-safe", "1", "-i", str(playlist)]
+        args = ["-map", "0:v:0", "-c:v", "copy"]
+        if formats.audio:
+            inputs += ["-i", str(audio)]
+            args += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"]
+        _run(base + inputs + args + ["-movflags", "+faststart", str(mp4)], cancel)
+        _verify(_probe(ffprobe, mp4, cancel), "mp4", seconds, canvas, audio_required=bool(formats.audio))
+        pending.append((mp4, _filename(video, part, "图文")))
+    if output is not Output.VIDEO:
+        mp3 = temp / "output.mp3"
+        _export_mp3(base, audio, mp3, ffprobe, seconds, cancel, progress)
+        pending.append((mp3, _filename(video, part, "图文配乐")))
+    progress("保存文件", 98, "正在写入最终文件名")
+    files = _publish(folder, pending, cancel)
+    progress("下载完成", 100, " · ".join(file.suffix[1:].upper() for file in files))
+    return SavedMedia(files, label="图文合成" if images else "")
+
+
 def save_media(
     resolve_formats: Callable[[Video, Part], Formats], video: Video, part: Part, quality_code: int | None,
-    output: Output, folder: Path, cancel: Event, progress: Progress,
+    output: Output, folder: Path, cancel: Event, progress: Progress, *, asset_options: AssetOptions = AssetOptions(),
 ) -> SavedMedia:
     ffmpeg, ffprobe = (str(ROOT / "runtime" / exe) for exe in ("ffmpeg.exe", "ffprobe.exe"))
     if not all(Path(tool).is_file() for tool in (ffmpeg, ffprobe)):
@@ -152,6 +335,13 @@ def save_media(
     folder.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".medialink-", dir=folder) as temporary:
         temp = Path(temporary)
+        if output is Output.ASSETS:
+            if not video.is_note:
+                raise UserError("「分开保存素材」适用于抖音图文。")
+            return _save_note_assets(resolve_formats, video, part, folder, temp, ffmpeg, ffprobe,
+                                     asset_options, cancel, progress)
+        if video.is_note:
+            return _save_note(resolve_formats, video, part, output, folder, temp, ffmpeg, ffprobe, cancel, progress)
         video_path = temp / "video.m4s"
         audio_path = temp / "audio.m4s"
         selected_code = quality_code
@@ -199,10 +389,8 @@ def save_media(
             _verify(_probe(ffprobe, mp4, cancel), "mp4", part.seconds, quality.track)
             pending.append((mp4, _filename(video, part, quality.label)))
         if output is not Output.VIDEO:
-            progress("转换 MP3", 95, "正在将原音轨编码为 MP3")
             mp3 = temp / "output.mp3"
-            _run(base + ["-i", str(audio_input), "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "320k", str(mp3)], cancel)
-            _verify(_probe(ffprobe, mp3, cancel), "mp3", part.seconds)
+            _export_mp3(base, audio_input, mp3, ffprobe, part.seconds, cancel, progress)
             pending.append((mp3, _filename(video, part, "")))
         progress("保存文件", 98, "正在写入最终文件名")
         files = _publish(folder, pending, cancel)

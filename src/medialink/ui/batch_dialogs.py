@@ -2,6 +2,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QPlainTextEdit, QVBoxLayout
 
 from ..links import share_links
+from ..models import Output
 from .widgets import button, label
 
 
@@ -27,7 +28,9 @@ class LinkDialog(QDialog):
         layout.setContentsMargins(22, 22, 22, 22)
         layout.setSpacing(12)
         layout.addWidget(label("批量添加链接", "title"))
-        description = label(f"最多 50 条，支持直接粘贴分享文本。每条按最高可用画质保存为 {output.value}。", "caption")
+        detail = ("每条抖音图文的素材会单独保存。" if output is Output.ASSETS else
+                  f"每条按最高可用画质保存为 {output.value}。")
+        description = label("最多 50 条，支持直接粘贴分享文本。" + detail, "caption")
         description.setWordWrap(True)
         layout.addWidget(description)
         self.input = QPlainTextEdit()

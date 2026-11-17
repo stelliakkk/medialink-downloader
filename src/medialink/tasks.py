@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-from .models import Output, Part, Source, Video
+from .models import AssetOptions, ImageFormat, Output, Part, Source, Video
 
 
 class State(Enum):
@@ -34,16 +34,20 @@ class Request:
     folder: Path
     cid: int | None = None
     source: Source = Source.BILIBILI
+    is_note: bool = False
+    asset_options: AssetOptions = AssetOptions()
 
     @classmethod
-    def for_part(cls, video: Video, part: Part, quality: int | None, output: Output, folder: Path):
+    def for_part(cls, video: Video, part: Part, quality: int | None, output: Output, folder: Path, *,
+                 asset_options: AssetOptions = AssetOptions()):
         return cls(video.video_id, part.number, video.title, part.name,
-                   None if output is Output.AUDIO else quality, output, folder.absolute(),
-                   part.cid if video.source is Source.BILIBILI else None, video.source)
+                   None if output in (Output.AUDIO, Output.ASSETS) else quality, output, folder.absolute(),
+                   part.cid if video.source is Source.BILIBILI else None, video.source, video.is_note,
+                   asset_options if output is Output.ASSETS else AssetOptions())
 
     @property
     def url(self) -> str:
-        return self.source.url(self.video_id, self.page)
+        return self.source.url(self.video_id, self.page, is_note=self.is_note)
 
     @property
     def folder_key(self) -> str:
@@ -104,12 +108,15 @@ class TaskStore:
                     id INTEGER PRIMARY KEY,
                     video_id TEXT NOT NULL,
                     source TEXT NOT NULL DEFAULT 'bilibili',
+                    is_note INTEGER NOT NULL DEFAULT 0,
                     page INTEGER NOT NULL,
                     cid INTEGER,
                     title TEXT NOT NULL,
                     part TEXT NOT NULL,
                     quality INTEGER,
                     output TEXT NOT NULL,
+                    image_format TEXT NOT NULL DEFAULT 'original',
+                    include_clip_covers INTEGER NOT NULL DEFAULT 1,
                     folder TEXT NOT NULL,
                     folder_key TEXT NOT NULL,
                     state TEXT NOT NULL,
@@ -131,6 +138,12 @@ class TaskStore:
                 self.db.execute("ALTER TABLE tasks RENAME COLUMN bvid TO video_id")
             if "source" not in columns:
                 self.db.execute("ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'bilibili'")
+            if "is_note" not in columns:
+                self.db.execute("ALTER TABLE tasks ADD COLUMN is_note INTEGER NOT NULL DEFAULT 0")
+            if "image_format" not in columns:
+                self.db.execute("ALTER TABLE tasks ADD COLUMN image_format TEXT NOT NULL DEFAULT 'original'")
+            if "include_clip_covers" not in columns:
+                self.db.execute("ALTER TABLE tasks ADD COLUMN include_clip_covers INTEGER NOT NULL DEFAULT 1")
             self.db.execute("DROP INDEX IF EXISTS task_identity")
             self.db.execute("""
                 CREATE INDEX IF NOT EXISTS task_source_identity ON tasks(source,video_id,page,output,folder_key)
@@ -142,7 +155,9 @@ class TaskStore:
     @staticmethod
     def _task(row: sqlite3.Row) -> Task:
         request = Request(row["video_id"], row["page"], row["title"], row["part"], row["quality"],
-                          Output(row["output"]), Path(row["folder"]), row["cid"], Source(row["source"]))
+                          Output(row["output"]), Path(row["folder"]), row["cid"], Source(row["source"]),
+                          bool(row["is_note"]),
+                          AssetOptions(ImageFormat(row["image_format"]), bool(row["include_clip_covers"])))
         media = SavedMedia(tuple(Path(value) for value in json.loads(row["files"])),
                            row["actual_quality"], row["quality_label"])
         return Task(row["id"], request, State(row["state"]), row["finished"], media, row["message"])
@@ -180,11 +195,13 @@ class TaskStore:
                 if self._duplicate(request):
                     continue
                 self.db.execute("""
-                    INSERT INTO tasks(source,video_id,page,cid,title,part,quality,output,folder,folder_key,state)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                """, (request.source.value, request.video_id, request.page, request.cid,
+                    INSERT INTO tasks(source,video_id,is_note,page,cid,title,part,quality,output,
+                                      image_format,include_clip_covers,folder,folder_key,state)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (request.source.value, request.video_id, request.is_note, request.page, request.cid,
                       request.title, request.part, request.quality,
-                      request.output.value, str(request.folder), request.folder_key, State.WAITING.value))
+                      request.output.value, request.asset_options.image_format.value, request.asset_options.include_clip_covers,
+                      str(request.folder), request.folder_key, State.WAITING.value))
                 added += 1
         return Enqueued(added, len(requests) - added)
 
@@ -192,10 +209,12 @@ class TaskStore:
         rows = self.db.execute("""
             SELECT * FROM tasks
             WHERE source=? AND video_id=? AND page=? AND output=? AND folder_key=?
+              AND image_format=? AND include_clip_covers=?
               AND (cid IS NULL OR ? IS NULL OR cid=?)
               AND state IN ('waiting','running','done')
         """, (request.source.value, request.video_id, request.page, request.output.value,
-              request.folder_key, request.cid, request.cid))
+              request.folder_key, request.asset_options.image_format.value, request.asset_options.include_clip_covers,
+              request.cid, request.cid))
         for row in rows:
             if row["state"] != State.DONE.value:
                 if row["quality"] == request.quality:

@@ -4,13 +4,13 @@ import sqlite3
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLineEdit,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLineEdit,
     QMainWindow, QMenu, QProgressBar, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .. import APP_NAME, __version__
 from ..links import input_link
-from ..models import Output, Source, UserError, check_cancelled
+from ..models import AssetOptions, ImageFormat, Output, Source, UserError, check_cancelled
 from ..platforms.bilibili import Bilibili
 from ..queue import DownloadQueue
 from ..sources import open_source
@@ -103,7 +103,7 @@ class MainWindow(QMainWindow):
         icon.setPixmap(self.windowIcon().pixmap(34, 34))
         self.account_button = button("B 站登录")
         self.account_button.clicked.connect(self._account_menu)
-        self.account_state = FitLabel("B 站游客", "status")
+        self.account_state = FitLabel("B 站未登录", "caption")
         self.account_state.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.account_state.setFixedWidth(168)
         top = row(icon, label(APP_NAME, "brand"), label("桌面版", "badge"),
@@ -112,18 +112,18 @@ class MainWindow(QMainWindow):
 
         intro = QVBoxLayout()
         intro.setSpacing(4)
-        intro.addWidget(label("下载视频", "hero"))
-        intro.addWidget(label("粘贴 B 站或抖音分享链接，保存视频或音频。", "caption"))
+        intro.addWidget(label("下载作品", "hero"))
+        intro.addWidget(label("支持 B 站视频、抖音视频和抖音图文。", "caption"))
         layout.addLayout(intro)
 
         entry, entry_layout = panel("inputPanel", 16, 10)
         self.batch_button = button("批量添加链接", "ghost")
         self.batch_button.clicked.connect(self._batch)
-        entry_layout.addLayout(row(label("01", "step"), label("视频链接", "section"), None, self.batch_button))
+        entry_layout.addLayout(row(label("01", "step"), label("作品链接", "section"), None, self.batch_button))
         self.url = QLineEdit()
         self.url.setObjectName("link")
-        self.url.setPlaceholderText("粘贴 B 站 / 抖音视频链接或完整分享文本")
-        self.url.setAccessibleName("B 站或抖音视频链接")
+        self.url.setPlaceholderText("粘贴作品链接或完整分享文本")
+        self.url.setAccessibleName("B 站或抖音作品链接")
         self.url.setClearButtonEnabled(True)
         self.url.textChanged.connect(self._link_changed)
         self.url.returnPressed.connect(self._resolve)
@@ -150,7 +150,7 @@ class MainWindow(QMainWindow):
     def _preview_panel(self):
         frame, layout = panel(gap=9)
         self.preview_badge = label("待解析", "badge")
-        layout.addLayout(row(label("02", "step"), label("视频预览", "section"), None, self.preview_badge))
+        layout.addLayout(row(label("02", "step"), label("作品预览", "section"), None, self.preview_badge))
         self.poster = Poster()
         layout.addWidget(self.poster, 1)
         self.video_title = FitLabel("等待视频链接", "title")
@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
         self.output_choices = QButtonGroup(self)
         options_row = QHBoxLayout()
         options_row.setSpacing(7)
-        for index, (mode, title) in enumerate(zip(Output, ("视频 MP4", "仅音频 MP3", "MP4 + MP3"), strict=True)):
+        for index, title in enumerate(("视频 MP4", "仅音频 MP3", "MP4 + MP3", "分开保存素材")):
             option = button(title, "choice")
             option.setCheckable(True)
             option.setChecked(index == 0)
@@ -198,6 +198,20 @@ class MainWindow(QMainWindow):
             options_row.addWidget(option, 1)
         self.output_choices.idClicked.connect(self._output_changed)
         layout.addLayout(options_row)
+
+        self.asset_controls = QWidget()
+        asset_row = row(label("图片格式", "field"))
+        asset_row.setContentsMargins(0, 0, 0, 0)
+        self.image_format = ComboBox()
+        self.image_format.setAccessibleName("图片格式")
+        self.image_format.addItem("PNG", ImageFormat.PNG)
+        self.image_format.addItem("原始格式", ImageFormat.ORIGINAL)
+        asset_row.addWidget(self.image_format, 1)
+        self.include_clip_covers = QCheckBox("同时保存片段封面")
+        self.include_clip_covers.setChecked(True)
+        asset_row.addWidget(self.include_clip_covers)
+        self.asset_controls.setLayout(asset_row)
+        layout.addWidget(self.asset_controls)
 
         layout.addSpacing(4)
         layout.addWidget(label("保存位置", "field"))
@@ -258,24 +272,49 @@ class MainWindow(QMainWindow):
                               and self.url.text().strip() == self.parsed_link)
         self.multi_parts.setEnabled(self.parts.isEnabled() and parsed)
         self.folder_button.setEnabled(idle)
+        note = parsed and self.video.is_note
+        silent_note = note and self.formats.audio is None
+        mixed_note = note and self.formats.has_motion
+        self.output_choices.button(3).setVisible(note)
+        self.asset_controls.setVisible(note and self.output_choices.checkedId() == 3)
+        self.asset_controls.setEnabled(idle)
+        self.include_clip_covers.setVisible(note and any(slide.is_clip_cover for slide in self.formats.slides))
         for option in self.output_choices.buttons():
-            option.setEnabled(idle)
+            choice = self.output_choices.id(option)
+            needs_audio = silent_note and choice in (1, 2)
+            needs_assets = mixed_note and choice in (0, 2)
+            option.setEnabled(idle and not (needs_audio or needs_assets))
+            option.setToolTip("请用「分开保存素材」保存视频片段" if needs_assets else
+                              "这条图文没有可用配乐" if needs_audio else "")
         has_video = self.quality.currentIndex() >= 0 and self.quality.count() > 0 and self.quality.itemData(0) is not None
         self.quality.setEnabled(idle and parsed and has_video and not audio_only)
-        self.download_button.setEnabled(idle and parsed and (audio_only or has_video))
+        selected = self.output_choices.checkedButton()
+        self.download_button.setEnabled(idle and parsed and selected.isEnabled() and (audio_only or has_video or note))
 
     def _output_changed(self):
+        note = self.formats is not None and self.video.is_note and self.url.text().strip() == self.parsed_link
+        if not note and self.output_choices.checkedId() == 3:
+            self.output_choices.button(0).setChecked(True)
         choice = self.output_choices.checkedId()
-        self.download_button.setText("导出 MP3" if choice == 1 else "开始下载")
-        self.output_note.set_full((
+        self.download_button.setText({1: "导出 MP3", 3: "保存素材"}.get(choice, "开始下载"))
+        notes = (
             "直接封装原始画面与音轨",
             "从视频音轨导出 320 kbps MP3",
             "保存视频，并用同一音轨导出 MP3",
-        )[choice])
+            "",
+        )
+        if note:
+            notes = (
+                "按图片顺序合成带配乐的 MP4" if self.formats.audio else "每张图片播放 3 秒，合成静音 MP4",
+                "从图文配乐导出 320 kbps MP3",
+                "合成带配乐的 MP4，并单独导出配乐",
+                "按作品顺序分别保存图片、视频片段和可用配乐",
+            )
+        self.output_note.set_full(notes[choice])
         self._update_controls()
 
     def _link_changed(self):
-        self._update_controls()
+        self._output_changed()
         if self.worker is None and self.url.text().strip() != self.parsed_link:
             self._progress("准备就绪", 0, "按 Enter 或点击「解析链接」" if self.url.text().strip() else "等待视频链接")
 
@@ -347,7 +386,7 @@ class MainWindow(QMainWindow):
         if self.worker or not text:
             return
         self.formats = None
-        self._progress("正在解析", None, "正在获取视频信息和可用画质")
+        self._progress("正在解析", None, "正在获取作品信息和可用素材")
         cookies = self.cookies.copy()
 
         def operation(task):
@@ -385,11 +424,23 @@ class MainWindow(QMainWindow):
 
     def _render_video(self):
         video, part = self.video, self.part
-        self.preview_badge.setText(f"{video.source.label} · {video.video_id}")
-        self.poster.update_cover(self.cover, duration(part.seconds))
+        source = "抖音图文" if video.is_note else video.source.label
+        self.preview_badge.setText(f"{source} · {video.video_id}")
+        self.poster.update_cover(self.cover, duration(part.seconds) if part.seconds else "")
         self.video_title.set_full(video.title)
         self.part_controls.setVisible(video.source is Source.BILIBILI)
         details = f" · {len(video.parts)} 个分 P" if video.source is Source.BILIBILI else ""
+        if video.is_note:
+            slides = self.formats.slides
+            stills = sum(slide.image is not None and not (slide.is_live or slide.is_clip_cover or
+                         slide.motion_unavailable) for slide in slides)
+            clips = sum(slide.clip is not None and not slide.is_live for slide in slides)
+            live = sum(slide.is_live for slide in slides)
+            details = f" · {stills} 张图片" if stills else ""
+            if clips:
+                details += f" · {clips} 个片段"
+            if live:
+                details += f" · {live} 张实况照片"
         self.video_info.set_full(f"{video.author}{details}")
         self.parts.blockSignals(True)
         self.parts.clear()
@@ -402,6 +453,21 @@ class MainWindow(QMainWindow):
 
     def _render_formats(self):
         formats = self.formats
+        if self.video.is_note:
+            self.quality.clear()
+            self.quality.addItem("图文素材" if formats.has_motion else "图文作品")
+            self.quality_note.set_full("可分别保存图片、片段和配乐")
+            if formats.has_motion:
+                self.output_choices.button(3).setChecked(True)
+            elif formats.audio is None and self.output_choices.checkedId() in (1, 2):
+                self.output_choices.button(0).setChecked(True)
+            self._output_changed()
+            audio = "有配乐" if formats.audio else "无可用配乐"
+            detail = f"{len(formats.slides)} 项画面 · {audio}"
+            if any(slide.motion_unavailable for slide in formats.slides):
+                detail += " · 部分视频片段未提供独立地址"
+            self._progress("解析完成", 0, detail)
+            return
         available = [quality for quality in formats.qualities if quality.track]
         unavailable = [quality.label for quality in formats.qualities if quality.track is None]
         self.quality.blockSignals(True)
@@ -418,6 +484,7 @@ class MainWindow(QMainWindow):
             "当前不可用：" + "、".join(unavailable) if unavailable else "已获取当前可用的画质档位"
         )
         self._progress("解析完成", 0, f"已获取 {len(available)} 个视频档位，可以开始下载")
+        self._output_changed()
 
     def _part_changed(self):
         part = self.parts.currentData()
@@ -451,7 +518,11 @@ class MainWindow(QMainWindow):
     def _request(self, part):
         selected = self.quality.currentData()
         output = list(Output)[self.output_choices.checkedId()]
-        return Request.for_part(self.video, part, None if selected == "best" else selected, output, self.folder)
+        return Request.for_part(self.video, part, None if selected == "best" else selected, output, self.folder,
+                                asset_options=self._asset_options())
+
+    def _asset_options(self):
+        return AssetOptions(self.image_format.currentData(), self.include_clip_covers.isChecked())
 
     def _choose_parts(self):
         if not self.multi_parts.isEnabled():
@@ -466,6 +537,7 @@ class MainWindow(QMainWindow):
         if self.worker:
             return
         output, folder = list(Output)[self.output_choices.checkedId()], self.folder
+        asset_options = self._asset_options()
         dialog = LinkDialog(self, output, folder)
         if not dialog.exec():
             return
@@ -482,10 +554,18 @@ class MainWindow(QMainWindow):
                     source, link = input_link(link)
                     with open_source(source, cookies, task.cancel) as api:
                         video, part = api.resolve(link)
+                        if output is Output.ASSETS and not video.is_note:
+                            raise UserError("「分开保存素材」适用于抖音图文。")
+                        if video.is_note and output is not Output.ASSETS:
+                            formats = api.formats(video, part)
+                            if formats.has_motion and output is not Output.AUDIO:
+                                raise UserError("这条图文含视频片段，请选择「分开保存素材」。")
+                            if formats.audio is None and output in (Output.AUDIO, Output.BOTH):
+                                raise UserError("这条图文没有可导出的配乐。")
                 except UserError as error:
                     errors.append(f"第 {index} 条 · {error}")
                 else:
-                    requests.append(Request.for_part(video, part, None, output, folder))
+                    requests.append(Request.for_part(video, part, None, output, folder, asset_options=asset_options))
             check_cancelled(task.cancel)
             return requests, errors
 
@@ -576,7 +656,7 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.files[0].parent)))
 
     def _check_account(self):
-        self.account_state.set_full("正在检查登录")
+        self.account_state.set_full("B 站验证中")
         self._progress("正在检查登录", None, "正在验证本机 B 站会话")
         cookies = self.cookies.copy()
 
@@ -599,15 +679,18 @@ class MainWindow(QMainWindow):
                 self._progress("准备就绪", 0, "登录已恢复" if account else "登录已过期，已切换到游客模式")
 
         self._start(operation, receive)
-        self.worker.failed.connect(lambda _: self.account_state.set_full("登录待验证"))
-        self.worker.cancelled.connect(lambda: self.account_state.set_full("登录待验证"))
+        self.worker.failed.connect(lambda _: self.account_state.set_full("B 站登录待验证"))
+        self.worker.cancelled.connect(lambda: self.account_state.set_full("B 站登录待验证"))
 
     def _account_display(self):
         if self.account:
-            self.account_state.set_full(("大会员 · " if self.account.vip else "已登录 · ") + self.account.name)
+            set_role(self.account_state, "status")
+            self.account_state.set_full("B 站已登录 · " + self.account.name)
+            self.account_state.setToolTip(self.account_state.full_text + ("（大会员）" if self.account.vip else ""))
             self.account_button.setText("B 站账号")
         else:
-            self.account_state.set_full("B 站游客")
+            set_role(self.account_state, "caption")
+            self.account_state.set_full("B 站未登录")
             self.account_button.setText("B 站登录")
 
     def _account_menu(self):

@@ -7,10 +7,10 @@ import requests
 from urllib3.exceptions import HTTPError
 
 from ..links import DOUYIN_HOSTS, input_link, trusted_link
-from ..models import Formats, Part, Quality, Source, Track, UserError, Video, check_cancelled
+from ..models import Formats, Part, Quality, Slide, Source, Track, UserError, Video, check_cancelled
 from .edge import playback_detail
 
-VIDEO_PATH = re.compile(r"/(?:share/)?video/([0-9]{10,24})/?")
+POST_PATH = re.compile(r"/(?:share/)?(video|note|slides)/([0-9]{10,24})/?")
 
 
 def _number(value) -> int:
@@ -20,17 +20,24 @@ def _number(value) -> int:
         return 0
 
 
-def _asset_urls(values, domain: str) -> tuple[str, ...]:
+def _asset_urls(values, *domains: str) -> tuple[str, ...]:
+    if isinstance(values, str):
+        values = (values,)
     if isinstance(values, dict):
-        values = values.values()
+        values = tuple(values.values())
+    if not isinstance(values, (list, tuple)):
+        return ()
     result = []
     for url in values or ():
+        if isinstance(url, dict):
+            url = url.get("src")
         if not isinstance(url, str):
             continue
         try:
             parsed = urlsplit(url)
             host = parsed.hostname or ""
-            if (parsed.scheme == "https" and (host == domain or host.endswith("." + domain))
+            if (parsed.scheme == "https"
+                    and any(host == domain or host.endswith("." + domain) for domain in domains)
                     and parsed.port in (None, 443) and parsed.username is None and parsed.password is None):
                 result.append(url)
         except ValueError:
@@ -99,6 +106,46 @@ def parse_playback(item: dict, video_id: str) -> Playback:
                     part, _formats(media))
 
 
+def parse_note(item: dict, note_id: str) -> Playback:
+    images = item.get("images") or []
+    if item.get("awemeId") != note_id or not images:
+        raise UserError("抖音图文没有返回可用图片。")
+    slides = []
+    for image in images:
+        urls = _asset_urls(image.get("urlList") or image.get("url_list"), "douyinpic.com")
+        photo = Track(urls, "", 0, _number(image.get("width")), _number(image.get("height"))) if urls else None
+        motion = image.get("video")
+        if not isinstance(motion, dict):
+            motion = {}
+        address = motion.get("playAddr") or motion.get("play_addr") or ()
+        if isinstance(address, dict):
+            address = address.get("urlList") or address.get("url_list") or ()
+        clip_urls = _asset_urls(address, "douyinvod.com")
+        if not clip_urls:
+            clip_urls = _asset_urls(motion.get("playAddrH265"), "douyinvod.com")
+        clip = Track(clip_urls, "", 0) if clip_urls else None
+        if not photo and not clip:
+            raise UserError("抖音没有提供这条图文的全部画面素材。")
+        clip_type = _number(image.get("clipType"))
+        is_live = clip_type == 3
+        has_motion = bool(motion) or clip_type in (3, 4)
+        slides.append(Slide(photo, clip, motion_unavailable=has_motion and clip is None, is_live=is_live))
+    music = item.get("music") or {}
+    address = music.get("playUrl") or {}
+    urls = ()
+    if music.get("canNotPlay") is not True:
+        urls = _asset_urls(address.get("urlList"), "douyinstatic.com", "douyinvod.com")
+    audio = Track(urls, "", 0) if urls else None
+    title = next((text.strip() for text in (item.get("desc"), item.get("itemTitle"))
+                  if isinstance(text, str) and text.strip()), "抖音图文")
+    author = str((item.get("authorInfo") or {}).get("nickname") or "抖音作者")
+    seconds = _number(music.get("duration")) if audio else (len(slides) * 3 if not any(s.clip for s in slides) else 0)
+    part = Part(1, 0, title, seconds)
+    cover = next((slide.image.urls[0] for slide in slides if slide.image), "")
+    video = Video(note_id, title, author, cover, (part,), Source.DOUYIN, is_note=True)
+    return Playback(video, part, Formats((), audio, tuple(slides)))
+
+
 class Douyin:
     def __init__(self, cancel: Event):
         self.cancel = cancel
@@ -111,16 +158,16 @@ class Douyin:
     def __exit__(self, *_):
         self.session.close()
 
-    def _resolve_id(self, text: str) -> str:
+    def _resolve_post(self, text: str) -> tuple[str, bool]:
         source, link = input_link(text)
         if source is not Source.DOUYIN:
-            raise UserError("请粘贴抖音视频链接。")
+            raise UserError("请粘贴抖音视频或图文链接。")
         for _ in range(5):
             check_cancelled(self.cancel)
             parsed = urlsplit(link)
             if parsed.hostname != "v.douyin.com":
-                if match := VIDEO_PATH.fullmatch(parsed.path):
-                    return match[1]
+                if match := POST_PATH.fullmatch(parsed.path):
+                    return match[2], match[1] != "video"
                 break
             try:
                 with self.session.get(link, allow_redirects=False, stream=True, timeout=(5, 8)) as response:
@@ -130,18 +177,22 @@ class Douyin:
                     link = target
             except requests.RequestException:
                 raise UserError("连接抖音分享链接失败，请检查网络后重试。") from None
-        raise UserError("抖音链接已失效，或没有指向普通视频。")
+        raise UserError("抖音链接已失效，或没有指向普通视频或图文作品。")
+
+    def _playback(self, video_id: str, is_note: bool) -> Playback:
+        item = playback_detail(video_id, self.cancel, is_note=is_note)
+        return parse_note(item, video_id) if is_note else parse_playback(item, video_id)
 
     def resolve(self, text: str) -> tuple[Video, Part]:
-        video_id = self._resolve_id(text)
-        self.initial = parse_playback(playback_detail(video_id, self.cancel), video_id)
+        video_id, is_note = self._resolve_post(text)
+        self.initial = self._playback(video_id, is_note)
         return self.initial.video, self.initial.part
 
     def formats(self, video: Video, _part: Part) -> Formats:
         initial, self.initial = self.initial, None
-        if initial and initial.video.video_id == video.video_id:
+        if initial and initial.video.video_id == video.video_id and initial.video.is_note == video.is_note:
             return initial.formats
-        return parse_playback(playback_detail(video.video_id, self.cancel), video.video_id).formats
+        return self._playback(video.video_id, video.is_note).formats
 
     def cover(self, video: Video) -> bytes:
         if not video.cover_url:

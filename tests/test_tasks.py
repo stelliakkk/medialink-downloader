@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import sqlite3
 import unittest
 
-from medialink.models import Output, Source
+from medialink.models import AssetOptions, ImageFormat, Output, Source
 from medialink.tasks import Request, SavedMedia, State, TaskStore
 
 
@@ -51,6 +51,27 @@ class TaskStoreTests(unittest.TestCase):
             replace(self.request, folder=self.folder / "other"), replace(self.request, quality=64),
         ])
         self.assertEqual(result.added, 4)
+
+    def test_note_url_survives_reopening_task_store(self):
+        note = replace(self.request, video_id="7700235736393517049", source=Source.DOUYIN,
+                       is_note=True, quality=None, output=Output.ASSETS)
+        self.store.enqueue([note])
+        other = TaskStore(self.db)
+        self.addCleanup(other.close)
+        request = other.claim().request
+        self.assertEqual(request.url, "https://www.douyin.com/note/7700235736393517049")
+        self.assertEqual(request.output, Output.ASSETS)
+
+    def test_asset_options_persist_and_have_separate_duplicate_keys(self):
+        note = replace(self.request, video_id="7708318171170682597", source=Source.DOUYIN,
+                       is_note=True, quality=None, output=Output.ASSETS)
+        png = replace(note, asset_options=AssetOptions(ImageFormat.PNG, False))
+        with_cover = replace(png, asset_options=AssetOptions(ImageFormat.PNG, True))
+        result = self.store.enqueue([note, png, with_cover, png])
+        self.assertEqual((result.added, result.duplicates), (3, 1))
+        other = TaskStore(self.db)
+        self.addCleanup(other.close)
+        self.assertEqual([task.request for task in other.active()], [note, png, with_cover])
 
     def test_replaced_part_is_not_a_duplicate(self):
         old = replace(self.request, cid=123)

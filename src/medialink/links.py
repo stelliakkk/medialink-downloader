@@ -25,6 +25,7 @@ def trusted_link(url: str, hosts: frozenset[str] | set[str]) -> bool:
 
 
 def share_links(text: str):
+    text = re.sub(r"(https?)\\://", r"\1://", text, flags=re.I)
     for match in SHARE_LINK.finditer(text):
         link = match[0].rstrip("。，、；！？）)]")
         if not re.match(r"https?://", link, re.I):

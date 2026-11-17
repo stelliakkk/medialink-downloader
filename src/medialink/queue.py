@@ -22,7 +22,7 @@ def execute_request(request: Request, cookies: dict[str, str], task: Worker) -> 
         if request.cid is not None and part.cid != request.cid:
             raise UserError("这条视频的分 P 已调整。请重新解析并添加任务。")
         return save_media(api.formats, video, part, request.quality, request.output,
-                          request.folder, task.cancel, task.progress.emit)
+                          request.folder, task.cancel, task.progress.emit, asset_options=request.asset_options)
 
 
 class DownloadQueue(QObject):
