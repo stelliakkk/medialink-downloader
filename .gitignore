@@ -4,6 +4,7 @@
 /dist/
 /runtime/
 /data/
+/data-backups/
 /downloads/
 /reports/
 __pycache__/

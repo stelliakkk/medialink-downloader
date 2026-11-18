@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from medialink.links import input_link, share_links
 from medialink.models import Cancelled, Source, UserError
-from medialink.platforms.douyin import parse_note, parse_playback
+from medialink.platforms.douyin import Douyin, parse_note, parse_playback
 from medialink.platforms.edge import _StartupError, _note_document, _read_detail, playback_detail
 
 
@@ -14,6 +14,27 @@ VIDEO_ID = "7705856425225932082"
 
 
 class DouyinTests(unittest.TestCase):
+    @patch("medialink.platforms.douyin.playback_detail")
+    def test_video_url_with_photo_content_switches_to_note_and_keeps_cached_formats(self, detail):
+        note = {"awemeId": VIDEO_ID, "images": [
+            {"urlList": ["https://p3.douyinpic.com/photo.webp"], "width": 100, "height": 200},
+        ]}
+        detail.side_effect = [{"aweme_id": VIDEO_ID, "images": [{"url_list": ["photo"]}]}, note]
+        with Douyin(Event()) as client:
+            video, part = client.resolve(f"https://www.douyin.com/video/{VIDEO_ID}")
+            formats = client.formats(video, part)
+        self.assertTrue(video.is_note)
+        self.assertEqual(video.url, f"https://www.douyin.com/note/{VIDEO_ID}")
+        self.assertEqual(len(formats.slides), 1)
+        self.assertEqual([call.kwargs["is_note"] for call in detail.call_args_list], [False, True])
+
+    @patch("medialink.platforms.douyin.playback_detail")
+    def test_mismatched_photo_response_does_not_switch_to_note(self, detail):
+        detail.return_value = {"aweme_id": "1234567890", "images": [{}]}
+        with Douyin(Event()) as client, self.assertRaises(UserError):
+            client.resolve(f"https://www.douyin.com/video/{VIDEO_ID}")
+        detail.assert_called_once()
+
     def test_mixed_share_text_and_markdown_links(self):
         links = list(share_links(
             "【B 站】 http://b23.tv/BV1eknB6DE37，抖音 "

@@ -181,6 +181,10 @@ class Douyin:
 
     def _playback(self, video_id: str, is_note: bool) -> Playback:
         item = playback_detail(video_id, self.cancel, is_note=is_note)
+        # Douyin also shares photo posts through /video/ URLs.
+        if not is_note and str(item.get("aweme_id")) == video_id and item.get("images"):
+            check_cancelled(self.cancel)
+            return self._playback(video_id, True)
         return parse_note(item, video_id) if is_note else parse_playback(item, video_id)
 
     def resolve(self, text: str) -> tuple[Video, Part]:

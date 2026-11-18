@@ -8,4 +8,4 @@ from .platforms.douyin import Douyin
 def open_source(source: Source, cookies: dict[str, str], cancel: Event) -> Bilibili | Douyin:
     if source is Source.DOUYIN:
         return Douyin(cancel)
-    return Bilibili(cookies)
+    return Bilibili(cookies, cancel)

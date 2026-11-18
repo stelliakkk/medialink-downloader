@@ -69,7 +69,7 @@ class LoginDialog(QDialog):
         self.tile.setText("正在获取二维码")
         self._status("正在联系 B 站…")
         self.refresh.setEnabled(True)
-        self.worker = Worker(lambda task: login(task.cancel, task.qr.emit, task.status.emit), self)
+        self.worker = Worker(lambda task: login(task.cancel, task.qr.emit, task.status.emit), self, context="扫码登录")
         self.worker.qr.connect(self._show_qr)
         self.worker.status.connect(self._status)
         self.worker.ready.connect(self._success)

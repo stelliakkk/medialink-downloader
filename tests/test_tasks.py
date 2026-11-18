@@ -30,7 +30,7 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(self.store.history()[0].message, "测试故障")
 
     def test_completed_actual_quality_and_missing_output(self):
-        auto = replace(self.request, quality=None)
+        auto = replace(self.request, quality=None, best_quality=80)
         self.store.enqueue([auto])
         running = self.store.claim()
         video, audio = self.folder / "out.mp4", self.folder / "out.mp3"
@@ -51,6 +51,35 @@ class TaskStoreTests(unittest.TestCase):
             replace(self.request, folder=self.folder / "other"), replace(self.request, quality=64),
         ])
         self.assertEqual(result.added, 4)
+
+    def test_higher_current_best_is_not_blocked_by_completed_lower_quality(self):
+        old = replace(self.request, quality=None, best_quality=80)
+        self.store.enqueue([old])
+        running = self.store.claim()
+        file = self.folder / "1080p.mp4"
+        file.touch()
+        self.store.finish(running.id, State.DONE, SavedMedia((file,), 80), "")
+        self.assertEqual(self.store.enqueue([old]).duplicates, 1)
+        higher = replace(old, best_quality=120)
+        self.assertEqual(self.store.enqueue([higher]).added, 1)
+        self.assertEqual(self.store.active()[0].request.best_quality, 120)
+        self.assertIsNone(self.store.active()[0].request.quality)  # Still selects fresh best when executed.
+
+    def test_unknown_best_does_not_assume_old_completed_quality_is_current(self):
+        old = replace(self.request, quality=None)
+        self.store.enqueue([old])
+        running = self.store.claim()
+        file = self.folder / "old.mp4"
+        file.touch()
+        self.store.finish(running.id, State.DONE, SavedMedia((file,), 80), "")
+        self.assertEqual(self.store.enqueue([old, old]).added, 1)
+
+    def test_best_quality_column_migrates_without_changing_existing_tasks(self):
+        self.store.enqueue([self.request])
+        self.store.db.execute("ALTER TABLE tasks DROP COLUMN best_quality")
+        other = TaskStore(self.db)
+        self.addCleanup(other.close)
+        self.assertEqual(other.active()[0].request, self.request)
 
     def test_note_url_survives_reopening_task_store(self):
         note = replace(self.request, video_id="7700235736393517049", source=Source.DOUYIN,

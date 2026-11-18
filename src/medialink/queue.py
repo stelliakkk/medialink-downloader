@@ -96,7 +96,7 @@ class DownloadQueue(QObject):
             return
         cookies = self.cookies()
         self.active_id = task.id
-        self.worker = Worker(lambda worker: self.execute(task.request, cookies, worker), self)
+        self.worker = Worker(lambda worker: self.execute(task.request, cookies, worker), self, context="下载")
         self.worker.ready.connect(self._succeeded)
         self.worker.failed.connect(self._failed)
         self.worker.cancelled.connect(self._cancelled)

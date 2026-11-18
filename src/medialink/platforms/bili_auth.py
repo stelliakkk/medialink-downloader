@@ -22,7 +22,8 @@ STATES = {
 }
 
 
-def _login_cookies(session: requests.Session, response: requests.Response, data: dict) -> dict[str, str]:
+def _login_cookies(session: requests.Session, response: requests.Response, data: dict,
+                   cancel: Event | None = None) -> dict[str, str]:
     url = data.get("url") or ""
     cookies = {cookie.name: cookie.value for cookie in response.cookies if cookie.name in WEB_COOKIES}
     if trusted_link(url, TICKET_HOSTS):
@@ -33,7 +34,7 @@ def _login_cookies(session: requests.Session, response: requests.Response, data:
         for _ in range(3):
             if cookies.get("SESSDATA") or urlsplit(url).path != "/x/passport-login/web/crossDomain":
                 break
-            with web_get(session, url, stream=True) as ticket:
+            with web_get(session, url, stream=True, cancel=cancel) as ticket:
                 cookies.update({c.name: c.value for c in ticket.cookies if c.name in WEB_COOKIES})
                 url = urljoin(url, ticket.headers.get("Location", ""))
                 if not ticket.is_redirect or not trusted_link(url, TICKET_HOSTS):
@@ -47,7 +48,7 @@ def login(
     cancel: Event, show_code: Callable[[str], None], show_status: Callable[[str], None],
 ) -> tuple[Account, dict[str, str]]:
     with request_session() as session:
-        with web_get(session, PASSPORT_QR + "generate") as response:
+        with web_get(session, PASSPORT_QR + "generate", cancel=cancel) as response:
             qr = response_data(json_response(response))
         if not qr.get("qrcode_key") or not trusted_link(
             qr.get("url", ""), {"passport.bilibili.com", "account.bilibili.com", "www.bilibili.com"},
@@ -58,13 +59,13 @@ def login(
         deadline = monotonic() + 180
         last_status = None
         while monotonic() < deadline and not cancel.wait(1.6):
-            with web_get(session, PASSPORT_QR + "poll", params={"qrcode_key": qr["qrcode_key"]}) as response:
+            with web_get(session, PASSPORT_QR + "poll", params={"qrcode_key": qr["qrcode_key"]}, cancel=cancel) as response:
                 data = response_data(json_response(response))
                 status = data.get("code")
                 check_cancelled(cancel)
                 if status == 0:
-                    cookies = _login_cookies(session, response, data)
-                    with Bilibili(cookies) as client:
+                    cookies = _login_cookies(session, response, data, cancel)
+                    with Bilibili(cookies, cancel) as client:
                         account = client.account()
                     if account is None:
                         raise UserError("B 站未能验证这次登录，请重新扫码。")

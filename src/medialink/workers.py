@@ -3,6 +3,7 @@ from threading import Event
 from PySide6.QtCore import QThread, Signal
 
 from .models import Cancelled, UserError
+from .diagnostics import unexpected_error
 
 
 class Worker(QThread):
@@ -12,11 +13,13 @@ class Worker(QThread):
     progress = Signal(str, object, str)
     qr = Signal(str)
     status = Signal(str)
+    account_expired = Signal()
 
-    def __init__(self, operation, parent):
+    def __init__(self, operation, parent, *, context: str = "后台操作"):
         super().__init__(parent)
         self.operation = operation
         self.cancel = Event()
+        self.context = context
 
     def run(self):
         try:
@@ -27,8 +30,7 @@ class Worker(QThread):
             self.failed.emit(str(error))
         except OSError:
             self.failed.emit("无法读写本地文件。请检查保存位置、磁盘空间和文件权限。")
-        except Exception:
-            # Requests and process details may contain signed URLs. Keep them out of UI and logs.
-            self.failed.emit("没有完成这次操作，请重试。若持续失败，B 站接口可能已变化。")
+        except Exception as error:
+            self.failed.emit(unexpected_error(error, self.context))
         else:
             self.ready.emit(result)

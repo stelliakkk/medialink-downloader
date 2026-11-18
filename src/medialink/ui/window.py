@@ -358,8 +358,9 @@ class MainWindow(QMainWindow):
             self.queue.cancel()
             self.cancel_button.setEnabled(False)
 
-    def _start(self, operation, receive):
-        self.worker = Worker(operation, self)
+    def _start(self, operation, receive, *, context="解析"):
+        self.worker = Worker(operation, self, context=context)
+        self.worker.account_expired.connect(self._expire_account)
         self.worker.ready.connect(receive, Qt.ConnectionType.QueuedConnection)
         self.worker.failed.connect(self._error)
         self.worker.cancelled.connect(lambda: self._progress("已取消", 0, "可以重新开始当前操作"))
@@ -394,6 +395,7 @@ class MainWindow(QMainWindow):
             with open_source(source, cookies, task.cancel) as api:
                 account_expired = isinstance(api, Bilibili) and bool(cookies) and api.account() is None
                 if account_expired:
+                    task.account_expired.emit()
                     api.session.cookies.clear()
                 video, part = api.resolve(link)
                 check_cancelled(task.cancel)
@@ -408,14 +410,6 @@ class MainWindow(QMainWindow):
                 return
             self.video, self.part, self.formats, self.cover, expired = payload
             self.parsed_link = text
-            if expired:
-                self.cookies = {}
-                self.account = None
-                self._account_display()
-                try:
-                    self.storage.clear_cookies()
-                except OSError:
-                    pass
             self._render_video()
             if expired:
                 self.detail.set_full("登录已过期，已按游客可用画质解析")
@@ -497,7 +491,7 @@ class MainWindow(QMainWindow):
         video, cookies = self.video, self.cookies.copy()
 
         def operation(task):
-            with Bilibili(cookies) as api:
+            with Bilibili(cookies, task.cancel) as api:
                 formats = api.formats(video, part)
             check_cancelled(task.cancel)
             return formats
@@ -518,8 +512,11 @@ class MainWindow(QMainWindow):
     def _request(self, part):
         selected = self.quality.currentData()
         output = list(Output)[self.output_choices.checkedId()]
+        best = None
+        if selected == "best" and part == self.part and self.formats is not None:
+            best = self.formats.select(None).code
         return Request.for_part(self.video, part, None if selected == "best" else selected, output, self.folder,
-                                asset_options=self._asset_options())
+                                asset_options=self._asset_options(), best_quality=best)
 
     def _asset_options(self):
         return AssetOptions(self.image_format.currentData(), self.include_clip_covers.isChecked())
@@ -551,6 +548,7 @@ class MainWindow(QMainWindow):
                 check_cancelled(task.cancel)
                 task.progress.emit("批量解析", None, f"正在处理第 {index} / {len(links)} 条")
                 try:
+                    best = None
                     source, link = input_link(link)
                     with open_source(source, cookies, task.cancel) as api:
                         video, part = api.resolve(link)
@@ -562,10 +560,13 @@ class MainWindow(QMainWindow):
                                 raise UserError("这条图文含视频片段，请选择「分开保存素材」。")
                             if formats.audio is None and output in (Output.AUDIO, Output.BOTH):
                                 raise UserError("这条图文没有可导出的配乐。")
+                        elif not video.is_note and output in (Output.VIDEO, Output.BOTH):
+                            best = api.formats(video, part).select(None).code
                 except UserError as error:
                     errors.append(f"第 {index} 条 · {error}")
                 else:
-                    requests.append(Request.for_part(video, part, None, output, folder, asset_options=asset_options))
+                    requests.append(Request.for_part(video, part, None, output, folder,
+                                                     asset_options=asset_options, best_quality=best))
             check_cancelled(task.cancel)
             return requests, errors
 
@@ -574,7 +575,7 @@ class MainWindow(QMainWindow):
                 requests, errors = payload
                 self._enqueue(requests, errors)
 
-        self._start(operation, receive)
+        self._start(operation, receive, context="批量解析")
 
     def _enqueue(self, requests, errors=None):
         if self.closing:
@@ -661,7 +662,7 @@ class MainWindow(QMainWindow):
         cookies = self.cookies.copy()
 
         def operation(task):
-            with Bilibili(cookies) as api:
+            with Bilibili(cookies, task.cancel) as api:
                 account = api.account()
             check_cancelled(task.cancel)
             return account
@@ -670,17 +671,22 @@ class MainWindow(QMainWindow):
             if not self.worker.cancel.is_set():
                 self.account = account
                 if account is None:
-                    try:
-                        self.storage.clear_cookies()
-                    except OSError:
-                        pass
-                    self.cookies = {}
+                    self._expire_account()
                 self._account_display()
                 self._progress("准备就绪", 0, "登录已恢复" if account else "登录已过期，已切换到游客模式")
 
-        self._start(operation, receive)
+        self._start(operation, receive, context="账号验证")
         self.worker.failed.connect(lambda _: self.account_state.set_full("B 站登录待验证"))
         self.worker.cancelled.connect(lambda: self.account_state.set_full("B 站登录待验证"))
+
+    def _expire_account(self):
+        self.account = None
+        self.cookies = {}
+        self._account_display()
+        try:
+            self.storage.clear_cookies()
+        except OSError:
+            pass
 
     def _account_display(self):
         if self.account:

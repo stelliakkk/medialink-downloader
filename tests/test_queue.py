@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+import os
 import sqlite3
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -8,7 +9,8 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from PySide6.QtCore import QCoreApplication
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from PySide6.QtWidgets import QApplication
 
 from medialink.models import Output, Part, UserError, check_cancelled
 from medialink.queue import DownloadQueue, execute_request
@@ -18,7 +20,7 @@ from medialink.tasks import Request, SavedMedia, State, TaskStore
 class QueueTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
         self.temp = TemporaryDirectory()

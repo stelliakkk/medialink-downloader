@@ -3,8 +3,9 @@
 from yt_dlp import YoutubeDL
 from yt_dlp.extractor.bilibili import BiliBiliIE
 from yt_dlp.utils import DownloadError
+from threading import Event
 
-from ..models import Part, Video
+from ..models import Part, Video, check_cancelled
 
 
 class QuietLogger:
@@ -17,6 +18,16 @@ class QuietLogger:
 class BiliTracksIE(BiliBiliIE):
     playback = None
 
+    def __init__(self, cancel: Event):
+        super().__init__()
+        self.cancel = cancel
+
+    def _request_webpage(self, *args, **kwargs):
+        check_cancelled(self.cancel)
+        result = super()._request_webpage(*args, **kwargs)
+        check_cancelled(self.cancel)
+        return result
+
     def extract_formats(self, play_info):
         # The presentation formats omit Bilibili's original backup URLs.
         if (play_info.get("dash") or {}).get("video"):
@@ -24,14 +35,15 @@ class BiliTracksIE(BiliBiliIE):
         return super().extract_formats(play_info)
 
 
-def guest_playback(video: Video, part: Part) -> dict | None:
+def guest_playback(video: Video, part: Part, cancel: Event) -> dict | None:
+    check_cancelled(cancel)
     options = {
         "quiet": True, "logger": QuietLogger(), "cachedir": False,
         "noplaylist": True, "socket_timeout": 8, "extractor_retries": 0,
         "retries": 0, "http_headers": {"Referer": video.url},
     }
     with YoutubeDL(options, auto_init=False) as downloader:
-        extractor = BiliTracksIE()
+        extractor = BiliTracksIE(cancel)
         downloader.add_info_extractor(extractor)
         try:
             info = downloader.extract_info(
@@ -39,7 +51,9 @@ def guest_playback(video: Video, part: Part) -> dict | None:
                 ie_key=extractor.ie_key(), process=False,
             )
         except DownloadError:
+            check_cancelled(cancel)
             return None
+    check_cancelled(cancel)
     if not info or info.get("id") not in {f"{video.video_id}_p{part.number}", video.video_id}:
         return None
     seconds = info.get("duration") or 0

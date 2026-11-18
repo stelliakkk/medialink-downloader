@@ -165,9 +165,9 @@ def _asset_suffix(info: dict, kind: str) -> str:
     container = info["format"]["format_name"]
     if kind == "图片":
         suffix = {
-            "mjpeg": "jpg", "png": "png", "apng": "png", "webp": "webp", "gif": "gif",
+            "mjpeg": "jpg", "png": "png", "apng": "png", "webp": "webp", "webp_anim": "webp", "gif": "gif",
             "bmp": "bmp", "tiff": "tif", "jpeg2000": "jp2", "av1": "avif",
-        }.get(streams.get("video")) if container.endswith("_pipe") or container in ("apng", "gif", "avif") else None
+        }.get(streams.get("video")) if container.endswith("_pipe") or container in ("apng", "gif", "avif", "webp_anim") else None
     elif kind == "片段":
         suffix = "mp4" if "mp4" in container.split(",") else {
             "matroska,webm": "webm", "mpegts": "ts",
@@ -197,6 +197,20 @@ def _convert_picture(raw: Path, suffix: str, ffmpeg: str, cancel: Event) -> tupl
     _run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(raw),
           "-map", "0:v:0", "-frames:v", "1", "-c:v", "png", "-update", "1", str(destination)], cancel)
     return destination, ".png"
+
+
+def _inspect_asset(raw: Path, kind: str, ffmpeg: str, ffprobe: str, cancel: Event) -> str:
+    """Decode every frame before publishing; a readable MP4 index is not enough."""
+    try:
+        suffix = _asset_suffix(_probe(ffprobe, raw, cancel), kind)
+        maps = ["-map", "0:a:0"] if kind == "音频" else ["-map", "0:v:0"]
+        if kind == "片段":
+            maps += ["-map", "0:a:0?"]
+        _run([ffmpeg, "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
+              "-i", str(raw), *maps, "-f", "null", "-"], cancel)
+        return suffix
+    except UserError:
+        raise MediaUnavailable(f"{kind}不完整或无法正常解码，下载未保存。") from None
 
 
 def _save_note_assets(resolve_formats: Callable[[Video, Part], Formats], video: Video, part: Part,
@@ -229,7 +243,8 @@ def _save_note_assets(resolve_formats: Callable[[Video, Part], Formats], video: 
                 raw = temp / "asset.media"
                 start, end = 95 * index // len(assets), 95 * (index + 1) // len(assets)
                 _transfer(track, raw, video.url, cancel, progress, f"下载{kind}", start, end - start)
-                suffix = _asset_suffix(_probe(ffprobe, raw, cancel), kind)
+                progress(f"校验{kind}", end, f"正在检查 {name} 的完整性")
+                suffix = _inspect_asset(raw, kind, ffmpeg, ffprobe, cancel)
                 if kind == "图片" and options.image_format is ImageFormat.PNG and suffix not in (".png", ".gif"):
                     progress("转换图片", end, f"正在处理 {name}")
                     raw, suffix = _convert_picture(raw, suffix, ffmpeg, cancel)

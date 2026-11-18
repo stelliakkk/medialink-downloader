@@ -5,6 +5,7 @@ from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from medialink import APP_NAME
+from medialink.diagnostics import configure_diagnostics
 from medialink.storage import Storage
 from medialink.ui.theme import apply_theme
 from medialink.ui.window import MainWindow
@@ -16,6 +17,7 @@ def main():
     app.setApplicationDisplayName(APP_NAME)
     apply_theme(app)
     storage = Storage()
+    configure_diagnostics(storage.directory)
     lock = QLockFile(str(storage.directory / "app.lock"))
     lock.setStaleLockTime(0)
     if not lock.tryLock(0):

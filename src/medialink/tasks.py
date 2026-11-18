@@ -36,14 +36,16 @@ class Request:
     source: Source = Source.BILIBILI
     is_note: bool = False
     asset_options: AssetOptions = AssetOptions()
+    best_quality: int | None = None
 
     @classmethod
     def for_part(cls, video: Video, part: Part, quality: int | None, output: Output, folder: Path, *,
-                 asset_options: AssetOptions = AssetOptions()):
+                 asset_options: AssetOptions = AssetOptions(), best_quality: int | None = None):
         return cls(video.video_id, part.number, video.title, part.name,
                    None if output in (Output.AUDIO, Output.ASSETS) else quality, output, folder.absolute(),
                    part.cid if video.source is Source.BILIBILI else None, video.source, video.is_note,
-                   asset_options if output is Output.ASSETS else AssetOptions())
+                   asset_options if output is Output.ASSETS else AssetOptions(),
+                   best_quality if quality is None and not video.is_note and output in (Output.VIDEO, Output.BOTH) else None)
 
     @property
     def url(self) -> str:
@@ -114,6 +116,7 @@ class TaskStore:
                     title TEXT NOT NULL,
                     part TEXT NOT NULL,
                     quality INTEGER,
+                    best_quality INTEGER,
                     output TEXT NOT NULL,
                     image_format TEXT NOT NULL DEFAULT 'original',
                     include_clip_covers INTEGER NOT NULL DEFAULT 1,
@@ -134,6 +137,8 @@ class TaskStore:
             columns = {column["name"] for column in self.db.execute("PRAGMA table_info(tasks)")}
             if "cid" not in columns:
                 self.db.execute("ALTER TABLE tasks ADD COLUMN cid INTEGER")
+            if "best_quality" not in columns:
+                self.db.execute("ALTER TABLE tasks ADD COLUMN best_quality INTEGER")
             if "bvid" in columns and "video_id" not in columns:
                 self.db.execute("ALTER TABLE tasks RENAME COLUMN bvid TO video_id")
             if "source" not in columns:
@@ -157,7 +162,8 @@ class TaskStore:
         request = Request(row["video_id"], row["page"], row["title"], row["part"], row["quality"],
                           Output(row["output"]), Path(row["folder"]), row["cid"], Source(row["source"]),
                           bool(row["is_note"]),
-                          AssetOptions(ImageFormat(row["image_format"]), bool(row["include_clip_covers"])))
+                          AssetOptions(ImageFormat(row["image_format"]), bool(row["include_clip_covers"])),
+                          row["best_quality"])
         media = SavedMedia(tuple(Path(value) for value in json.loads(row["files"])),
                            row["actual_quality"], row["quality_label"])
         return Task(row["id"], request, State(row["state"]), row["finished"], media, row["message"])
@@ -196,12 +202,12 @@ class TaskStore:
                     continue
                 self.db.execute("""
                     INSERT INTO tasks(source,video_id,is_note,page,cid,title,part,quality,output,
-                                      image_format,include_clip_covers,folder,folder_key,state)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                      image_format,include_clip_covers,folder,folder_key,state,best_quality)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (request.source.value, request.video_id, request.is_note, request.page, request.cid,
                       request.title, request.part, request.quality,
                       request.output.value, request.asset_options.image_format.value, request.asset_options.include_clip_covers,
-                      str(request.folder), request.folder_key, State.WAITING.value))
+                      str(request.folder), request.folder_key, State.WAITING.value, request.best_quality))
                 added += 1
         return Enqueued(added, len(requests) - added)
 
@@ -219,8 +225,17 @@ class TaskStore:
             if row["state"] != State.DONE.value:
                 if row["quality"] == request.quality:
                     return True
-            elif request.quality in (row["quality"], row["actual_quality"]):
-                if self._task(row).media.exists:
+            else:
+                desired = request.quality
+                if desired is None and not request.is_note and request.output in (Output.VIDEO, Output.BOTH):
+                    # Unknown current best must not let an old, lower tier block a new download.
+                    desired = request.best_quality
+                    if desired is None:
+                        continue
+                    matches = desired == row["actual_quality"]
+                else:
+                    matches = desired in (row["quality"], row["actual_quality"])
+                if matches and self._task(row).media.exists:
                     return True
         return False
 

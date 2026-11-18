@@ -4,13 +4,15 @@ from hashlib import md5
 from dataclasses import replace
 import re
 import time
+from threading import Event
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 import requests
+from urllib3.exceptions import HTTPError
 
 from .bili_extractor import guest_playback
 from ..links import BILI_HOSTS, BILI_VIDEO_HOSTS, share_links, trusted_link
-from ..models import Account, Formats, Part, Quality, Track, UserError, Video
+from ..models import Account, Formats, Part, Quality, Track, UserError, Video, check_cancelled
 
 HOME = "https://www.bilibili.com/"
 API = "https://api.bilibili.com"
@@ -66,11 +68,19 @@ def response_data(result: dict) -> dict:
     return result["data"]
 
 
-def web_get(session: requests.Session, url: str, **options) -> requests.Response:
+def web_get(session: requests.Session, url: str, *, cancel: Event | None = None, **options) -> requests.Response:
+    if cancel is not None:
+        check_cancelled(cancel)
     try:
-        return session.get(url, timeout=TIMEOUT, allow_redirects=False, **options)
+        response = session.get(url, timeout=TIMEOUT, allow_redirects=False, **options)
     except requests.RequestException:
+        if cancel is not None:
+            check_cancelled(cancel)
         raise UserError("连接 B 站失败，请检查网络后重试。") from None
+    if cancel is not None and cancel.is_set():
+        response.close()
+        check_cancelled(cancel)
+    return response
 
 
 def request_session(cookies: dict[str, str] | None = None) -> requests.Session:
@@ -82,7 +92,7 @@ def request_session(cookies: dict[str, str] | None = None) -> requests.Session:
     return session
 
 
-def normalize_link(text: str, session: requests.Session) -> tuple[str, int]:
+def normalize_link(text: str, session: requests.Session, cancel: Event | None = None) -> tuple[str, int]:
     link = next(share_links(text), None)
     if link is None:
         raise UserError("请粘贴 B 站普通视频链接或 b23.tv 分享链接。")
@@ -90,6 +100,8 @@ def normalize_link(text: str, session: requests.Session) -> tuple[str, int]:
         raise UserError("链接需要来自 bilibili.com 或 b23.tv。")
     original_page = parse_qs(urlsplit(link).query).get("p", ["1"])[0]
     for _ in range(5):
+        if cancel is not None:
+            check_cancelled(cancel)
         parsed = urlsplit(link)
         if parsed.hostname in BILI_VIDEO_HOSTS:
             video_id = VIDEO_PATH.fullmatch(parsed.path)
@@ -99,7 +111,7 @@ def normalize_link(text: str, session: requests.Session) -> tuple[str, int]:
             if not re.fullmatch(r"[0-9]{1,6}", page) or int(page) < 1:
                 raise UserError("链接中的分 P 编号无效。")
             return video_id[1], int(page)
-        with web_get(session, link, stream=True) as response:
+        with web_get(session, link, stream=True, cancel=cancel) as response:
             target = urljoin(link, response.headers.get("Location", ""))
             if not response.is_redirect or not trusted_link(target, BILI_HOSTS):
                 break
@@ -161,8 +173,13 @@ def parse_formats(data: dict, seconds: int) -> Formats:
 
 
 class Bilibili:
-    def __init__(self, cookies: dict[str, str] | None = None):
+    def __init__(self, cookies: dict[str, str] | None = None, cancel: Event | None = None):
         self.session = request_session(cookies)
+        self.cancel = cancel if cancel is not None else Event()
+
+    def _get(self, url: str, **options) -> requests.Response:
+        check_cancelled(self.cancel)
+        return web_get(self.session, url, cancel=self.cancel, **options)
 
     def __enter__(self):
         return self
@@ -171,7 +188,7 @@ class Bilibili:
         self.session.close()
 
     def account(self) -> Account | None:
-        with web_get(self.session, API + "/x/web-interface/nav") as response:
+        with self._get(API + "/x/web-interface/nav") as response:
             result = json_response(response)
         if result.get("code") == -101:
             return None
@@ -182,9 +199,9 @@ class Bilibili:
         return Account(str(data.get("uname") or "B 站账号"), vip.get("status", data.get("vipStatus")) == 1)
 
     def resolve(self, text: str) -> tuple[Video, Part]:
-        video_id, number = normalize_link(text, self.session)
+        video_id, number = normalize_link(text, self.session, self.cancel)
         params = {"aid": video_id[2:]} if video_id.startswith("av") else {"bvid": video_id}
-        with web_get(self.session, API + "/x/web-interface/view", params=params) as response:
+        with self._get(API + "/x/web-interface/view", params=params) as response:
             data = response_data(json_response(response))
         if (data.get("rights") or {}).get("is_stein_gate"):
             raise UserError("第一版暂不支持互动视频。")
@@ -205,12 +222,12 @@ class Bilibili:
 
     def formats(self, video: Video, part: Part) -> Formats:
         params = {"bvid": video.video_id, "cid": part.cid, "qn": 127, "fnval": 4048, "fourk": 1}
-        with web_get(
-            self.session, API + "/x/player/playurl", params=params, headers={"Referer": video.url},
+        with self._get(
+            API + "/x/player/playurl", params=params, headers={"Referer": video.url},
         ) as response:
             data = response_data(json_response(response))
         if self.session.cookies.get("SESSDATA", domain=".bilibili.com"):
-            with web_get(self.session, API + "/x/web-interface/nav") as response:
+            with self._get(API + "/x/web-interface/nav") as response:
                 keys = (json_response(response).get("data") or {}).get("wbi_img") or {}
             raw_key = "".join(urlsplit(keys.get(name, "")).path.rsplit("/", 1)[-1].split(".")[0]
                               for name in ("img_url", "sub_url"))
@@ -220,7 +237,7 @@ class Bilibili:
                 key = "".join(raw_key[index] for index in WBI_ORDER)[:32]
                 params["w_rid"] = md5((query + key).encode()).hexdigest()
                 try:
-                    with web_get(self.session, API + "/x/player/wbi/playurl", params=params,
+                    with self._get(API + "/x/player/wbi/playurl", params=params,
                                  headers={"Referer": video.url}) as response:
                         signed = response_data(json_response(response))
                     if signed.get("dash", {}).get("video"):
@@ -233,7 +250,9 @@ class Bilibili:
             return formats
         if not any(item.track is None and item.code in (64, 80) for item in formats.qualities):
             return formats
-        playback = guest_playback(video, part)
+        check_cancelled(self.cancel)
+        playback = guest_playback(video, part, self.cancel)
+        check_cancelled(self.cancel)
         if playback is None:
             return formats
         try:
@@ -252,9 +271,9 @@ class Bilibili:
         if not re.fullmatch(r"i[0-9]+\.hdslb\.com", urlsplit(url).hostname or ""):
             return b""
         try:
-            with web_get(self.session, url, stream=True) as response:
+            with self._get(url, stream=True) as response:
                 if response.status_code == 200:
                     return response.raw.read(2 * 1024 * 1024 + 1, decode_content=True)[:2 * 1024 * 1024]
-        except (UserError, OSError, requests.RequestException):
+        except (UserError, OSError, requests.RequestException, HTTPError):
             pass
         return b""
