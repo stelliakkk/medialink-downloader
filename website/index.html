@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0C0C0B">
+    <meta name="description" content="MediaLink 是一款 Windows 桌面媒体工具。解析哔哩哔哩和抖音链接，选择可用画质，保存视频、音频或图文素材，并在队列中管理任务。">
+    <meta property="og:type" content="website">
+    <meta property="og:locale" content="zh_CN">
+    <meta property="og:title" content="MediaLink — 让喜欢的内容，轻松保存。">
+    <meta property="og:description" content="从一条链接，到本地文件。了解 MediaLink Windows 桌面媒体工具。">
+    <meta property="og:url" content="https://stelliakkk.github.io/medialink-downloader/">
+    <link rel="canonical" href="https://stelliakkk.github.io/medialink-downloader/">
+    <link rel="icon" type="image/png" href="./assets/medialink.png">
+    <link rel="stylesheet" href="./src/style.css">
+    <script type="module" src="./src/main.js"></script>
+    <title>MediaLink — 让喜欢的内容，轻松保存。</title>
+  </head>
+  <body>
+    <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.03-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1.01 1.72 2.64 1.22 3.29.93.1-.73.39-1.22.72-1.5-2.5-.29-5.13-1.25-5.13-5.56 0-1.23.44-2.24 1.16-3.03-.12-.28-.5-1.43.11-2.99 0 0 .94-.3 3.1 1.16a10.7 10.7 0 0 1 5.64 0c2.15-1.46 3.09-1.16 3.09-1.16.61 1.56.23 2.71.12 2.99.72.79 1.15 1.8 1.15 3.03 0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.03.76 2.08v3.11c0 .3.21.65.77.54A11.25 11.25 0 0 0 12 .75Z"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-6 6-1 1a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0m2 2 1-1a3.5 3.5 0 0 1 5 5l-4 4a3.5 3.5 0 0 1-5 0" transform="translate(1 1)"/></symbol>
+      <symbol id="i-frame" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5m0 8v5h-5m-8 0H3v-5m6-7h6v6H9z"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 6h5m4 0h9M3 12h11m4 0h3M3 18h3m4 0h11M8 4v4m6 2v4m-8 2v4"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5h7l2 3h9v12H3V7Zm9 4v5m-2-2 2 2 2-2"/></symbol>
+    </svg>
+    <a class="skip-link" href="#content">跳至正文</a>
+    <header class="site-header">
+      <div class="wrap nav">
+        <a class="brand" href="#top" aria-label="MediaLink 首页">
+          <img src="./assets/medialink.png" alt="" width="31" height="31">
+          <span>MediaLink<span class="brand-dot">.</span></span>
+        </a>
+        <nav aria-label="主导航">
+          <a href="#capabilities">功能</a>
+          <a href="#inside">界面</a>
+          <a href="#workflow">用法</a>
+          <a href="#project">项目</a>
+        </nav>
+        <a class="nav-github" aria-label="MediaLink GitHub 仓库" href="https://github.com/stelliakkk/medialink-downloader">
+          <svg class="icon" aria-hidden="true"><use href="#i-github"/></svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+    </header>
+
+    <main id="content" tabindex="-1">
+      <section class="hero" id="top" aria-labelledby="hero-heading">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow hero-kicker"><span class="signal"></span> WINDOWS x64 <span class="meta-divider"></span> v3.0.6</p>
+            <h1 id="hero-heading">
+              <span class="title-mask"><span class="wordmark">MediaLink<span>.</span></span></span>
+              <span class="title-mask"><span class="hero-line">让喜欢的内容，</span></span>
+              <span class="title-mask"><span class="hero-line hero-line-soft">轻松保存。</span></span>
+            </h1>
+            <p class="hero-description">复制链接，解析内容，选择画质。<br>让视频保存回归简单。</p>
+            <a class="button button-primary hero-action" href="https://github.com/stelliakkk/medialink-downloader">
+              <svg class="icon" aria-hidden="true"><use href="#i-github"/></svg>
+              在 GitHub 上查看
+            </a>
+          </div>
+
+          <figure class="hero-figure">
+            <div class="hero-instrument" aria-hidden="true"></div>
+            <div class="hero-depth">
+              <div class="desktop-frame hero-window">
+                <div class="bezel"><span></span><span></span><span></span></div>
+                <img src="./assets/capture.webp" alt="MediaLink 下载页，显示链接、作品预览、画质和输出格式设置" width="1425" height="1050" fetchpriority="high">
+              </div>
+            </div>
+            <figcaption><span class="figure-mark" aria-hidden="true"></span> v3.0.6 界面实拍 · 演示数据</figcaption>
+          </figure>
+        </div>
+        <div class="wrap hero-base" aria-label="支持的平台与格式">
+          <span>哔哩哔哩 <span class="mid-dot">/</span> 抖音</span>
+          <span class="base-rule"></span>
+          <span class="meta">MP4 <span class="mid-dot">/</span> MP3 <span class="mid-dot">/</span> 图文</span>
+        </div>
+      </section>
+
+      <section class="section wrap capabilities" id="capabilities" aria-labelledby="capabilities-heading">
+        <div class="section-heading" data-reveal>
+          <div>
+            <p class="eyebrow"><span class="signal"></span> Capabilities</p>
+            <h2 id="capabilities-heading">不止下载，<br class="small-break">更是掌控。</h2>
+          </div>
+          <p>从输入链接到整理文件，画质、输出和任务进度都在同一个窗口里。</p>
+        </div>
+
+        <div class="bento">
+          <article class="feature feature-platform" data-reveal>
+            <div class="feature-copy">
+              <h3>两个平台，一个入口。</h3>
+              <p>粘贴哔哩哔哩或抖音的链接、分享文本或短链。支持 B 站普通视频及分 P、抖音普通视频及图文。</p>
+            </div>
+            <div class="platform-art" aria-hidden="true">
+              <span class="platform-type">哔哩哔哩</span>
+              <span class="platform-joint"><svg class="icon"><use href="#i-link"/></svg></span>
+              <span class="platform-type">抖音</span>
+            </div>
+            <p class="fine-print">抖音解析使用已安装的 Microsoft Edge。遇到网页登录或验证要求时，解析可能失败。</p>
+          </article>
+
+          <article class="feature feature-quality" data-reveal>
+            <div class="feature-copy">
+              <h3>按可用画质保存。</h3>
+              <p>手动选择档位，或在任务执行时获取最高可用画质。B 站扫码可获取账号有权使用的档位。</p>
+            </div>
+            <div class="quality-art" aria-hidden="true">
+              <span></span><span></span><span></span><span></span>
+              <svg class="icon"><use href="#i-frame"/></svg>
+            </div>
+          </article>
+
+          <article class="feature feature-queue" data-reveal>
+            <div class="feature-copy">
+              <h3>批量加入，按序执行。</h3>
+              <p>一次导入最多 50 条两平台混合链接。队列支持暂停后续任务、继续、取消当前项和移除等待项。可在历史中筛选结果、打开文件或重新入队。</p>
+            </div>
+            <div class="queue-art" aria-hidden="true">
+              <span class="queue-sheet"></span>
+              <span class="queue-sheet"></span>
+              <span class="queue-sheet"><i></i><i></i><i></i></span>
+            </div>
+          </article>
+
+          <article class="feature feature-output" data-reveal>
+            <div class="feature-copy">
+              <h3>视频、音轨与图文素材。</h3>
+              <p>普通视频可存为 MP4、导出 MP3，或同时保存。抖音静态图文可合成 MP4，也可将图文作品的图片、可用视频片段和配乐分开保存。</p>
+            </div>
+            <div class="format-art" aria-hidden="true"><span>MP4</span><span>MP3</span><span>图文</span></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="inside section" id="inside" aria-labelledby="inside-heading">
+        <div class="wrap">
+          <div class="section-heading" data-reveal>
+            <div>
+              <p class="eyebrow"><span class="signal"></span> Inside MediaLink</p>
+              <h2 id="inside-heading">每一个细节，<br>都为使用而设计。</h2>
+            </div>
+            <p>从预览到历史，看看 MediaLink 的实际工作界面。</p>
+          </div>
+          <div class="gallery" data-gallery data-reveal>
+            <nav class="gallery-nav" aria-label="界面预览">
+              <a id="tab-capture" href="#view-capture">解析与保存</a>
+              <a id="tab-queue" href="#view-queue">下载队列</a>
+              <a id="tab-history" href="#view-history">下载历史</a>
+            </nav>
+            <div class="gallery-views">
+              <figure class="gallery-view" id="view-capture">
+                <img src="./assets/capture.webp" alt="下载页将链接输入、作品预览和保存设置放在同一屏" width="1425" height="1050" loading="lazy" decoding="async">
+                <figcaption><strong>解析与保存</strong> <span>确认作品预览，选择画质、格式和保存位置。</span></figcaption>
+              </figure>
+              <figure class="gallery-view" id="view-queue">
+                <img src="./assets/queue.webp" alt="队列页显示两个演示任务的来源、画质、输出类型和等待状态" width="1425" height="1050" loading="lazy" decoding="async">
+                <figcaption><strong>下载队列</strong> <span>两平台任务统一排队，可继续暂停的队列。</span></figcaption>
+              </figure>
+              <figure class="gallery-view" id="view-history">
+                <img src="./assets/history.webp" alt="历史页显示三条演示任务以及筛选、打开目录和重新入队控件" width="1425" height="1050" loading="lazy" decoding="async">
+                <figcaption><strong>下载历史</strong> <span>按状态筛选，查找成品和需要重试的任务。</span></figcaption>
+              </figure>
+              <p class="gallery-note">MediaLink v3.0.6 界面实拍。作品、链接与任务记录均为离线演示数据。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section wrap workflow" id="workflow" aria-labelledby="workflow-heading">
+        <div class="section-heading" data-reveal>
+          <div>
+            <p class="eyebrow"><span class="signal"></span> How it works</p>
+            <h2 id="workflow-heading">从一条链接，<br class="small-break">到本地文件。</h2>
+          </div>
+        </div>
+        <ol class="steps" data-reveal>
+          <li><div class="step-meta"><span>01</span><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg></div>
+            <h3>复制链接</h3><p>复制作品链接或分享文本，粘贴到 MediaLink。</p></li>
+          <li><div class="step-meta"><span>02</span><svg class="icon" aria-hidden="true"><use href="#i-frame"/></svg></div>
+            <h3>解析内容</h3><p>点击「解析链接」，查看作品预览和当前可用选项。</p></li>
+          <li><div class="step-meta"><span>03</span><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></div>
+            <h3>选择画质与格式</h3><p>根据作品类型选择画质和输出方式，并确认保存位置。</p></li>
+          <li><div class="step-meta"><span>04</span><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg></div>
+            <h3>保存并管理任务</h3><p>加入下载队列，在历史中查看结果和打开文件。</p></li>
+        </ol>
+      </section>
+
+      <section class="project section" id="project" aria-labelledby="project-heading">
+        <div class="wrap project-inner" data-reveal>
+          <p class="eyebrow"><span class="signal"></span> GitHub 项目</p>
+          <h2 id="project-heading" lang="en">Built for<br>real needs<span>.</span></h2>
+          <p>MediaLink 起于实际使用中的一个需求：少做几次重复操作，就能把需要的视频和音轨保存到本地。项目在 GitHub 公开源代码、开发记录和问题反馈，并持续迭代。</p>
+          <p class="project-status">目前尚未完成广泛的跨设备兼容性验证。</p>
+          <a class="button button-primary" href="https://github.com/stelliakkk/medialink-downloader">
+            <svg class="icon" aria-hidden="true"><use href="#i-github"/></svg>
+            在 GitHub 上查看
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap footer-inner">
+        <div><strong>MediaLink Downloader</strong><span class="mid-dot"> / </span><span>stelliakkk</span></div>
+        <p>请仅保存自己有权下载或使用的内容。</p>
+        <a href="https://github.com/stelliakkk/medialink-downloader">GitHub 仓库</a>
+      </div>
+    </footer>
+  </body>
+</html>
